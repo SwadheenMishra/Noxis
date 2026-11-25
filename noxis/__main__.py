@@ -309,7 +309,8 @@ class Alerter:
         stamp = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
         t = self.term
         with self.lock:
-            t.out(t.c(severity, f"  ALERT [{stamp[11:]}] {text}") + ("\a" if self.beep else ""))
+            t.out(f"  {report.alert_mark(t)} " + t.c(severity, f"ALERT [{stamp[11:]}] {text}")
+                  + ("\a" if self.beep else ""))
             if detail:
                 t.out(t.c("dim", f"        {detail}"))
             append_line(self.log_path, f"{stamp} {where} " + (f"[{rule}] " if rule else "") + text)
@@ -839,6 +840,11 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# Commands that open with the owl banner, and what it says Noxis is doing.
+BANNER_STATUS = {"scan": "scanning", "sweep": "sweeping", "monitor": "watching",
+                 "honeypot": "watching", "check": "checking"}
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -851,6 +857,8 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(["scan", *(argv if argv is not None else sys.argv[1:])])
     if getattr(args, "deep_connections", None) and getattr(args, "deep", None) is None:
         parser.error("--deep-connections only applies together with --deep")
+    if args.command in BANNER_STATUS:
+        report.banner(report.Term(), BANNER_STATUS[args.command])
     try:
         return args.func(args)
     except (ScanError, RuntimeError) as e:
