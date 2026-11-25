@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Noxis output. Scan data normally lives in ~/.noxis, but never commit
+# reports, scans or logs if one ends up in the repo: they contain MAC
+# addresses, device names and network names.
+.noxis/
+reports/
+*.log
+scan*.json
+last_scan.json
+networks.json
+oui.tsv
+*.json.tmp
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Private session handoff (network details)
+HANDOFF.md
+
+# Design files (kept locally, not part of the code)
+noxis-brand-sheet.png
