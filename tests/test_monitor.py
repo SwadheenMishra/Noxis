@@ -142,17 +142,17 @@ class ConfigTests(TempHome):
         self.assertEqual(cfg.level(cfg.preset("home"), new), "alert")
         self.assertEqual(cfg.level(cfg.preset("travel"), new), "off")
         self.assertEqual(cfg.level(cfg.preset("travel"), cam), "alert")
-        self.assertEqual(cfg.level(cfg.preset("home"), Alert("honeypot", "Port scan", "x")), "phone")
+        self.assertEqual(cfg.level(cfg.preset("home"), Alert("honeypot", "Port scan", "x")), "push")
 
     def test_one_finding_overrides_its_group(self):
         cfg = Config(self.root)
         cfg.create("mine", "home")
-        cfg.set_level("mine", "DNS server changed", "phone")
+        cfg.set_level("mine", "DNS server changed", "phone")  # old name still accepted
         cfg.save()
         cfg = Config(self.root)
         dns = Alert("network-medium", "DNS server changed", "x")
         other = Alert("network-medium", "Something else", "x")
-        self.assertEqual(cfg.level(cfg.preset("mine"), dns), "phone")
+        self.assertEqual(cfg.level(cfg.preset("mine"), dns), "push")
         self.assertEqual(cfg.level(cfg.preset("mine"), other), "log")
 
     def test_builtins_are_read_only_and_deleting_reassigns(self):

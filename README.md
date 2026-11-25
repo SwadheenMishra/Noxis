@@ -111,9 +111,11 @@ Which modes accept which flag. "-" means the flag doesn't apply to that mode.
 | `--beep` | Terminal beep for each alert, on any OS. Over SSH, the beep plays on the computer you're connecting from. Needs the terminal's bell turned on | - | ✓ * | ✓ | ✓ |
 
 \* In a sweep, `--notify` and `--beep` fire for honeypot alerts as they happen;
-everything else is in the report at the end.
+everything else is in the report at the end. The same goes for [push
+notifications](#push-notifications), which need no flag: once set up, they're on
+for `monitor`, `honeypot` and `sweep --honeypot`.
 
-`check`, `known` and `update-oui` take no flags. `alerts` and `mute` are described under [Alerts](#alerts).
+`check`, `known` and `update-oui` take no flags. `alerts` and `mute` are described under [Alerts](#alerts), `push` under [Push notifications](#push-notifications).
 
 ## Trust
 
@@ -150,8 +152,8 @@ Noxis picks one for each network:
 | A new device joins | Alert | Ignored |
 | High-risk problem (camera, evil twin, connection tampering...) | Alert | Alert |
 | Medium problem (untrusted device, DNS server changed...) | Logged only | Logged only |
-| Someone touches or scans the honeypot | Phone \* | Phone \* |
-| A device maps every address on the network | Phone \* | Alert |
+| Someone touches or scans the honeypot | Push | Push |
+| A device maps every address on the network | Push | Alert |
 
 > **Tip:** run `noxis trust --all` on your home network before you start
 > monitoring it. Until you've trusted at least one device there, Noxis treats
@@ -164,7 +166,7 @@ What each level means:
 | `off` | Nothing |
 | `log` | Written to `alerts.log`, nothing on screen |
 | `alert` | Shown on screen and written to `alerts.log`, with `--beep` and `--notify` if you turned them on |
-| `phone` \* | Same as `alert` for now. Sending alerts to your phone is coming later |
+| `push` | Same as `alert`, and also sent to your phone or any other device, if you've set up [push notifications](#push-notifications) |
 
 ### Changing what alerts you
 
@@ -183,7 +185,7 @@ noxis alerts use myhome                         # use it on this network
 
 - `noxis alerts rules` lists every kind of alert you can set.
 - You can also set one specific problem by its name, e.g.
-  `noxis alerts set myhome dns-server-changed phone`. Every line in `alerts.log`
+  `noxis alerts set myhome dns-server-changed push`. Every line in `alerts.log`
   shows both names in brackets, e.g. `[network-medium | dns-server-changed]`: the
   first is the general kind, the second the exact problem. Either one works.
 - `noxis alerts use myhome --default untrusted` uses it on every network you
@@ -226,6 +228,83 @@ noxis mute remove 1
   flag every device there as new.
 - Changes from `noxis trust`, `noxis alerts` and `noxis mute` apply to a monitor
   that's already running. No restart needed.
+
+## Push notifications
+
+Alerts set to `push` can reach your phone, or any other device, through
+[ntfy](https://ntfy.sh): free, open source, with apps for Android and iPhone.
+You can use the public ntfy.sh server, or run your own (on the same Pi as Noxis,
+for example) so alerts never leave your network.
+
+```powershell
+noxis push add ntfy     # uses ntfy.sh with a new random topic, and prints it
+noxis push test         # sends a test message: check your phone
+```
+
+Then install the ntfy app and subscribe to the topic Noxis printed. That's it:
+from now on, `monitor`, `honeypot` and `sweep --honeypot` send their `push`
+alerts there.
+
+**What gets sent:**
+
+| Server | Messages | Example |
+|---|---|---|
+| Public ntfy.sh | **Minimal**: only what kind of alert, nothing about your network | "Honeypot alert on pi5. Details are in alerts.log there." |
+| Your own server | **Full**: the whole alert | "Port scan detected from 192.168.1.45 (Hikvision, untrusted ...)" |
+
+Add `--full` or `--minimal` to choose for yourself. On ntfy.sh, the topic name is
+the password: anyone who knows it can read your messages. That's why Noxis makes a
+long random one; keep it private.
+
+**Your own ntfy server**, for example on the Pi, reached through Tailscale when
+you're away from home:
+
+```powershell
+noxis push add ntfy --server https://your-pi.your-tailnet.ts.net
+noxis push add ntfy my-topic --server https://ntfy.example.com --token tk_...   # if it needs a login
+```
+
+**On an iPhone**, notifications from your own server only show up when you open
+the ntfy app, unless the server's `server.yml` has these lines:
+
+```yaml
+base-url: "http://your-pi.your-tailnet.ts.net:2586"   # exactly the address you use in the app
+upstream-base-url: "https://ntfy.sh"
+listen-http: ":2586"                                   # keep the port your address uses
+```
+
+That's how Apple works: only its own push service can wake an iPhone. With this
+setting your server sends ntfy.sh only a "new message" signal with a message ID,
+never the alert itself; the phone then fetches the alert from your server.
+`base-url` must match the app's address character for character (including
+`http://` and the port), or the wake-up goes nowhere. After changing it, restart
+ntfy (`sudo systemctl restart ntfy`), then unsubscribe and subscribe again in the
+app. Check that `sudo journalctl -u ntfy -n 3` says it's listening on the port
+you expect: if `listen-http` is missing, ntfy falls back to port 80.
+
+**Messages about Noxis itself:**
+
+| Command | Sends |
+|---|---|
+| `noxis push startstop on` / `off` | A message when `monitor` or `honeypot` starts and stops (on by default). If Noxis crashes, the message says so with high priority. After a power cut, you'll see "started" with no "stopped" before it |
+| `noxis push summary 09:00` | A daily "still watching" summary: how many scans and alerts, how many devices, and when Noxis last restarted |
+| `noxis push summary every 12h from 21:00` | At fixed times: here 21:00 and 09:00. The hours must fit the day evenly (1, 2, 3, 4, 6, 8, 12) |
+| `noxis push summary every 6h` | Every 6 hours (1-24), counted from when Noxis started |
+| `noxis push summary off` | No summaries (the default) |
+
+The summary doubles as a check that Noxis is alive. **If it doesn't arrive when
+it should, something is wrong**: the machine is off, Noxis stopped, or the
+network or ntfy server is down. No second machine needed.
+
+**When the server can't be reached,** alerts aren't lost: Noxis keeps up to 100,
+retries, and sends them together, marked as late, once it's back. Alerts that
+come within 30 seconds of each other are sent as one message, so a scan that
+trips several alarms buzzes your phone once. The public ntfy.sh allows 250
+messages a day.
+
+`noxis push list` shows where messages go, and `noxis push remove 1` removes one.
+Settings, including access tokens, are in `push.json`, readable only by you on
+Linux and macOS.
 
 ## How it identifies devices
 
@@ -370,8 +449,9 @@ old folder is left as a backup and can be deleted afterwards. `WARDEN_HOME`
 still works if `NOXIS_HOME` isn't set.
 
 Noxis connects to the internet only for the connection-integrity checks (a few
-well-known sites) and `update-oui` (the IEEE registry). Use `--no-checks` to
-skip the former.
+well-known sites), `update-oui` (the IEEE registry), and push notifications if
+you set them up (only to the ntfy server you chose). Use `--no-checks` to skip
+the first.
 
 ## Limits
 
@@ -400,8 +480,8 @@ The layout is one module per job: `scanner` runs discovery, `fingerprint`
 classifies devices, `services` names what each device hosts, `risk` turns that
 into findings, and `wifi`, `mitm`, `upnp` and `honeypot` are the other
 detectors. `report` handles terminal and HTML output, `store` keeps the
-trusted lists, and `alerts` decides what's worth an alert (presets, mutes,
-repeats).
+trusted lists, `alerts` decides what's worth an alert (presets, mutes,
+repeats), and `push` sends alerts to ntfy.
 
 ### Roadmap
 
@@ -414,7 +494,8 @@ repeats).
         up `trust` changes while running
   - [x] Alert presets per network (`home`, `travel`, your own), mutes, no repeated alerts
   - [ ] Runs as a background service: starts on boot, restarts if it crashes, survives closing SSH
-  - [ ] Alerts that reach your phone (`--notify` only shows desktop pop-ups)
+  - [x] Push notifications through ntfy (public or self-hosted), with start/stop messages and a
+        scheduled "still watching" summary
   - [ ] Root-only detection tested on real hardware: naming stealth scanners, network sweeps,
         rogue DHCP servers
   - [ ] Linux code paths tested live: network settings (`ip`), nearby Wi-Fi (`nmcli`), DNS

@@ -5,7 +5,7 @@ Every possible alert belongs to a *rule*. A preset gives each rule a level:
     off    ignored
     log    written to alerts.log only
     alert  terminal, alerts.log, --beep and --notify
-    phone  like alert; also meant for your phone (delivery isn't built yet)
+    push   like alert, and also sent as a push notification (`noxis push`)
 
 A rule is either a group (`device-high`, `honeypot`, ...) or one specific
 finding by its name (`dns-server-changed`), which overrides its group.
@@ -28,7 +28,9 @@ from pathlib import Path
 from .store import read_json, write_json
 from .util import normalize_mac
 
-LEVELS = ["off", "log", "alert", "phone"]
+LEVELS = ["off", "log", "alert", "push"]
+# Before push notifications were built, the top level was called phone.
+LEVEL_ALIASES = {"phone": "push"}
 
 # rule -> what it covers (shown by `noxis alerts rules`)
 RULES: dict[str, str] = {
@@ -54,7 +56,7 @@ BUILTIN: dict[str, dict[str, str]] = {
         "device-high": "alert", "device-medium": "log", "device-low": "off",
         "network-high": "alert", "network-medium": "log", "network-low": "off",
         "wifi-high": "alert", "wifi-medium": "log", "wifi-low": "off",
-        "honeypot": "phone", "network-sweep": "phone", "lure-visit": "alert",
+        "honeypot": "push", "network-sweep": "push", "lure-visit": "alert",
     },
     # Hotels, cafes, other people's networks: strangers' devices are normal
     # here, so only what threatens you (cameras, evil twins, interception,
@@ -64,7 +66,7 @@ BUILTIN: dict[str, dict[str, str]] = {
         "device-high": "alert", "device-medium": "log", "device-low": "off",
         "network-high": "alert", "network-medium": "log", "network-low": "off",
         "wifi-high": "alert", "wifi-medium": "log", "wifi-low": "off",
-        "honeypot": "phone", "network-sweep": "alert", "lure-visit": "log",
+        "honeypot": "push", "network-sweep": "alert", "lure-visit": "log",
     },
 }
 
@@ -220,8 +222,9 @@ class Config:
         if name in BUILTIN:
             return dict(BUILTIN[name])
         if name in self.presets:
-            # A preset made from an older Noxis may lack newer rules.
-            return {**BUILTIN["home"], **self.presets[name]}
+            # A preset made from an older Noxis may lack newer rules, or say "phone".
+            merged = {**BUILTIN["home"], **self.presets[name]}
+            return {k: LEVEL_ALIASES.get(v, v) for k, v in merged.items()}
         raise KeyError(name)
 
     def preset_for(self, net_id: str, trusted_network: bool) -> str:
@@ -246,6 +249,7 @@ class Config:
                              f"noxis alerts new my-{name} --from {name}")
         if name not in self.presets:
             raise ValueError(f"No preset called '{name}'.")
+        level = LEVEL_ALIASES.get(level, level)
         if level not in LEVELS:
             raise ValueError(f"Level must be one of: {', '.join(LEVELS)}.")
         rule = rule if rule in RULES else slug(rule)

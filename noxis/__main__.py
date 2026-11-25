@@ -10,12 +10,12 @@ import time
 import webbrowser
 from datetime import datetime
 
-from . import __version__, alerts, mitm, report, risk, upnp, wifi
+from . import __version__, alerts, mitm, push, report, risk, upnp, wifi
 from .models import Finding
 from .oui import OuiDB, update_from_ieee
 from .probes import MAX_DEEP_CONNECTIONS
 from .scanner import DeepOnce, ScanError, merge_rounds, run_scan
-from .store import Store, data_dir
+from .store import Store, data_dir, read_json, write_json
 from .util import append_line, fix_owner
 
 
@@ -52,6 +52,13 @@ def _deep(args) -> DeepOnce | None:
     if value is None:
         return None
     return DeepOnce(value or None, getattr(args, "deep_connections", None) or MAX_DEEP_CONNECTIONS)
+
+
+def _level(text: str) -> str:
+    level = alerts.LEVEL_ALIASES.get(text, text)
+    if level not in alerts.LEVELS:
+        raise argparse.ArgumentTypeError(f"'{text}' isn't a level ({', '.join(alerts.LEVELS)})")
+    return level
 
 
 def _connections(text: str) -> int:
@@ -137,9 +144,10 @@ def cmd_sweep(args) -> int:
     results = []
     stop = threading.Event()
     hits: list[Finding] = []
-    hp = None
+    hp = alerter = None
     if args.honeypot or args.lure:
-        hp = _start_honeypot(args, store, Alerter(store, args.beep, args.notify), stop, collect=hits)
+        alerter = Alerter(store, args.beep, args.notify)
+        hp = _start_honeypot(args, store, alerter, stop, collect=hits)
     started = time.monotonic()
     minutes = round((args.rounds * 75 + (args.rounds - 1) * args.wait) / 60)
     _log(f"Sweeping: {args.rounds} rounds, {args.wait}s apart (about {max(minutes, 1)} min). "
@@ -164,6 +172,8 @@ def cmd_sweep(args) -> int:
         if not results:
             _log("Stopped before the first round finished, so there's no report to save."
                  + (" Honeypot alerts are in alerts.log." if hits else ""))
+            if alerter is not None:
+                alerter.close()
             return 130
         _log(f"Stopped after {len(results)} of {args.rounds} rounds. Saving the report so far...")
     result = merge_rounds(results)
@@ -175,6 +185,7 @@ def cmd_sweep(args) -> int:
             "be missing. Run a full sweep if you can."))
     if hp is not None:
         stop.set()
+        alerter.close()  # push notifications still waiting go out now
         ran = round((time.monotonic() - started) / 60, 1)
         if hp.listening and not hits:
             extra.append(Finding(
@@ -274,10 +285,23 @@ class Alerter:
         self.log_path = store.root / "alerts.log"
         self.term = report.Term()
         self.lock = threading.Lock()
+        self.push_cfg = push.PushConfig(store.root)
+        self.pusher = push.Pusher(self.push_cfg.channels) if self.push_cfg.channels else None
+        # Counted since the last summary (see _Heartbeat).
+        self.stats = {"alerts": 0, "pushed": 0, "muted": 0, "rounds": 0}
         if notify and (why := notify_problem()):
             self.notify = False
             self.term.out(self.term.c("medium", f"--notify is off: {why}. Alerts still show here "
                                                 f"and in {self.log_path}."))
+
+    def push(self, msg: "push.Message") -> None:
+        if self.pusher is not None:
+            self.pusher.send(msg)
+
+    def close(self) -> None:
+        """Deliver push notifications still waiting before Noxis exits."""
+        if self.pusher is not None:
+            self.pusher.close()
 
     def preset_name(self, cfg: alerts.Config, net_id: str, trusted_network: bool) -> str:
         if self.preset_override and cfg.exists(self.preset_override):
@@ -300,8 +324,19 @@ class Alerter:
             with self.lock:
                 append_line(self.log_path, f"{datetime.now():%Y-%m-%d %H:%M:%S} {where} [{rule}] "
                                            f"{text}{note}")
+                if mute is not None:
+                    self.stats["muted"] += 1
             return "muted" if mute is not None else level
         self.emit(text, alert.severity, alert.detail, where, rule)
+        with self.lock:
+            self.stats["alerts"] += 1
+        if level == "push" and self.pusher is not None:
+            if alert.reminder:
+                import dataclasses
+                alert = dataclasses.replace(alert, text=text)
+            self.pusher.send(push.alert_message(alert, where))
+            with self.lock:
+                self.stats["pushed"] += 1
         return level
 
     def emit(self, text: str, severity: str = "high", detail: str = "", where: str = "",
@@ -371,6 +406,7 @@ def _start_honeypot(args, store: Store, alerter: Alerter, stop: threading.Event,
 
     live = _LiveNetwork(store)
     net = live.net
+    alerter.network_label = net.label  # for the push summary
 
     def on_alert(a):
         net = live.net
@@ -440,25 +476,124 @@ def _log_error(store: Store, what: str) -> None:
                 f"{datetime.now():%Y-%m-%d %H:%M:%S} {what}\n{traceback.format_exc()}")
 
 
+class _Heartbeat:
+    """Push messages about Noxis itself, for long-running commands: when it
+    starts and stops, and a summary on a schedule. A summary that doesn't
+    arrive when expected means the machine or Noxis is down."""
+
+    CHECK = 30  # seconds between summary checks
+
+    def __init__(self, alerter: Alerter, what: str, stop: threading.Event):
+        self.alerter, self.what, self.stop = alerter, what, stop
+        self.started = datetime.now()
+        self.host = push.host_name()
+        self.network = "the network"  # updated by the monitor each round
+        self.devices: int | None = None
+        self.state_path = alerter.store.root / "push_state.json"
+
+    def describe(self) -> str:
+        cfg = self.alerter.push_cfg
+        if not cfg.channels:
+            return "not set up (`noxis push add ntfy`)"
+        names = ", ".join(push.describe_channel(c).split("  ")[0] for c in cfg.channels)
+        return (f"{names}; start/stop messages {'on' if cfg.startstop else 'off'}, "
+                f"summary {push.describe_summary(cfg.summary)}")
+
+    def start(self) -> None:
+        if self.alerter.pusher is None:
+            return
+        if self.alerter.push_cfg.startstop:
+            self.alerter.push(push.status_message(
+                "Noxis started", f"{self.what} started on {self.host}.",
+                f"{self.what} started on {self.host}."))
+        if self.alerter.push_cfg.summary:
+            threading.Thread(target=self._loop, daemon=True, name="noxis-summary").start()
+
+    def finish(self, crash: str | None = None) -> None:
+        """`crash`: the error that ended it, or None for a normal stop. A crash
+        is sent with high priority: that's the stop worth noticing."""
+        if self.alerter.pusher is not None and self.alerter.push_cfg.startstop:
+            hours, rest = divmod(int((datetime.now() - self.started).total_seconds()), 3600)
+            ran = f"after {hours}h {rest // 60}m"
+            if crash:
+                msg = push.status_message(
+                    "Noxis crashed", f"{self.what} on {self.host} crashed ({crash}) {ran}. "
+                    f"Details are in errors.log there.", f"{self.what} on {self.host} crashed.")
+                msg.priority, msg.tags = 4, ["warning"]
+            else:
+                msg = push.status_message(
+                    "Noxis stopped", f"{self.what} on {self.host} was stopped (Ctrl+C, or the system "
+                    f"shut it down) {ran}.", f"{self.what} on {self.host} was stopped.")
+            self.alerter.push(msg)
+        self.alerter.close()
+
+    def _last(self) -> datetime | None:
+        try:
+            return datetime.fromisoformat(read_json(self.state_path, {}).get("last_summary", ""))
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    def _loop(self) -> None:
+        while not self.stop.wait(self.CHECK):
+            spec = push.PushConfig(self.alerter.store.root).summary  # `noxis push summary` applies live
+            if push.summary_due(spec, self._last(), self.started, datetime.now()):
+                self.send_summary()
+
+    def send_summary(self) -> None:
+        a = self.alerter
+        with a.lock:
+            s = dict(a.stats)
+            a.stats.update(alerts=0, pushed=0, muted=0, rounds=0)
+        last = self._last()
+        # Counts restart with each run, so "since the last summary" only when
+        # that summary came from this run; otherwise "so far".
+        this_run = last is not None and last >= self.started.replace(microsecond=0)  # saved to the second
+        since = f"since {last:%a %H:%M}" if this_run else "so far"
+        lines = [f"Still watching {self.network} from {self.host}.",
+                 f"{since[0].upper() + since[1:]}: " + (f"{s['rounds']} scans, " if s["rounds"] else "")
+                 + f"{s['alerts']} alerts ({s['pushed']} pushed, {s['muted']} muted)."]
+        if self.devices is not None:
+            lines.append(f"{self.devices} devices on the network now.")
+        lines.append(f"Running since {self.started:%a %d %b %H:%M}.")
+        if a.pusher is not None and (a.pusher.pending() or a.pusher.dropped):
+            lines.append(f"{a.pusher.pending()} notifications waiting to be sent, "
+                         f"{a.pusher.dropped} dropped (server unreachable).")
+        a.push(push.status_message(
+            "Noxis summary", "\n".join(lines),
+            f"Still watching from {self.host}. {s['alerts']} alerts {since}. "
+            f"Running since {self.started:%a %d %b %H:%M}."))
+        write_json(self.state_path, {"last_summary": datetime.now().isoformat(timespec="seconds")})
+
+
 def cmd_honeypot(args) -> int:
     store = Store()
     alerter = Alerter(store, args.beep, args.notify)
     stop = threading.Event()
     _stop_on_sigterm()
-    _start_honeypot(args, store, alerter, stop)
-    alerter.term.out(alerter.term.c("dim", f"Waiting for visitors (Ctrl+C to stop). Logs: "
-                                           f"{store.root / 'honeypot.log'}"))
+    beat = _Heartbeat(alerter, "Honeypot", stop)
+    crash = None
     try:
+        _start_honeypot(args, store, alerter, stop)
+        beat.network = getattr(alerter, "network_label", beat.network)
+        alerter.term.out(f"  Push notifications: {beat.describe()}")
+        alerter.term.out(alerter.term.c("dim", f"Waiting for visitors (Ctrl+C to stop). Logs: "
+                                               f"{store.root / 'honeypot.log'}"))
+        beat.start()
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        stop.set()
         alerter.term.out("\nStopped.")
+    except BaseException as e:
+        crash = type(e).__name__
+        raise
+    finally:
+        stop.set()
+        beat.finish(crash)
     return 0
 
 
 def _monitor_round(result, state: alerts.MonitorState, alerter: Alerter,
-                   remind: float | None, shown: dict) -> None:
+                   remind: float | None, shown: dict, beat: "_Heartbeat | None" = None) -> None:
     """Turn one scan into alerts. `shown` remembers which preset was announced
     for which network, so moving to another network says what changed."""
     net = result.network
@@ -482,6 +617,10 @@ def _monitor_round(result, state: alerts.MonitorState, alerter: Alerter,
     for a in fresh + fire:
         alerter.send(a, net_id, trusted_network, net.label)
     state.save()
+    with alerter.lock:
+        alerter.stats["rounds"] += 1
+    if beat is not None:
+        beat.network, beat.devices = net.label, len(result.devices)
 
 
 def cmd_monitor(args) -> int:
@@ -504,13 +643,21 @@ def cmd_monitor(args) -> int:
         t.out(t.c("dim", "Deep scan is on: every device gets a full port check in the first round, "
                          "then each new device when it joins."))
     shown: dict = {}
+    honeypot = args.honeypot or args.lure
+    minutes = args.interval / 60
+    every = f"{minutes:g} min" if minutes >= 1 else f"{args.interval}s"
+    beat = _Heartbeat(alerter, f"Monitor (scans every {every}{', honeypot on' if honeypot else ''})",
+                      stop)
+    t.out(t.c("dim", f"Push notifications: {beat.describe()}"))
+    crash = None
     try:
-        if args.honeypot or args.lure:
+        if honeypot:
             _start_honeypot(args, store, alerter, stop)
+        beat.start()
         while True:
             try:
                 result = _scan(args, store, quiet=True, deep=deep)
-                _monitor_round(result, state, alerter, remind, shown)
+                _monitor_round(result, state, alerter, remind, shown, beat)
             except ScanError as e:
                 t.out(t.c("medium", f"[{datetime.now():%H:%M:%S}] scan skipped: {e}"))
             except Exception as e:  # a 24/7 monitor must outlive one bad round
@@ -520,8 +667,13 @@ def cmd_monitor(args) -> int:
                                     f"{store.root / 'errors.log'}"))
             time.sleep(args.interval)
     except KeyboardInterrupt:
-        stop.set()
         t.out("\nStopped.")
+    except BaseException as e:
+        crash = type(e).__name__
+        raise
+    finally:
+        stop.set()
+        beat.finish(crash)
     return 0
 
 
@@ -588,7 +740,7 @@ def cmd_alerts(args) -> int:
             print(f"\n{len(cfg.mutes)} mute(s). `noxis alerts show NAME` for a preset's rules, "
                   "`noxis mute list` for mutes.")
         elif action == "rules":
-            print("Rules (give each a level in a preset: off, log, alert, phone):")
+            print("Rules (give each a level in a preset: off, log, alert, push):")
             for rule, what in alerts.RULES.items():
                 print(f"  {rule:<15} {what}")
             print("\nOne specific finding can also be its own rule, by its name in lowercase with "
@@ -605,9 +757,9 @@ def cmd_alerts(args) -> int:
             for rule, level in preset.items():
                 if rule not in alerts.RULES:
                     print(f"  {rule:<15} {level}  (one finding)")
-            if "phone" in preset.values():
-                print("\n'phone' alerts show like 'alert' for now: sending them to a phone isn't "
-                      "built yet.")
+            if "push" in preset.values() and not push.PushConfig(store.root).channels:
+                print("\n'push' alerts only show here until you set up push notifications: "
+                      "noxis push add ntfy")
         elif action == "new":
             cfg.create(args.name, args.base)
             cfg.save()
@@ -703,6 +855,62 @@ def cmd_mute(args) -> int:
     return 0
 
 
+def cmd_push(args) -> int:
+    store = Store()
+    cfg = push.PushConfig(store.root)
+    action = args.action or "list"
+    try:
+        if action == "list":
+            if not cfg.channels:
+                print("No push notifications set up. Add ntfy with: noxis push add ntfy")
+            for i, ch in enumerate(cfg.channels, 1):
+                print(f"  {i}. {push.describe_channel(ch)}")
+            print(f"\nStart/stop messages: {'on' if cfg.startstop else 'off'}. "
+                  f"Summary: {push.describe_summary(cfg.summary)}.")
+        elif action == "add":
+            detail = "minimal" if args.minimal else "full" if args.full else "auto"
+            ch = cfg.add_ntfy(args.topic, args.server, args.token, detail)
+            cfg.save()
+            print(f"Added: {push.describe_channel(ch)}")
+            print(f"\nIn the ntfy app, subscribe to the topic\n  {ch['topic']}\non the server\n  {ch['server']}")
+            if push.is_public(ch["server"]):
+                print("\nOn the public ntfy.sh, the topic name is the password: anyone who knows it "
+                      "can read these\nmessages. Keep it private. Messages are minimal (no IPs or "
+                      "device names) unless you add --full.")
+            print("\nCheck it works: noxis push test")
+        elif action == "remove":
+            if not 1 <= args.number <= len(cfg.channels):
+                raise ValueError(f"there's no channel {args.number} (see `noxis push list`).")
+            gone = cfg.channels.pop(args.number - 1)
+            cfg.save()
+            print(f"Removed: {push.describe_channel(gone)}")
+        elif action == "test":
+            if not cfg.channels:
+                raise ValueError("no push notifications set up yet. Add one: noxis push add ntfy")
+            failed = 0
+            for i, ch in enumerate(cfg.channels, 1):
+                error = push.test_channel(ch)
+                failed += bool(error)
+                print(f"  {i}. {push.describe_channel(ch).split('  ')[0]}: "
+                      + (f"FAILED, {error}" if error else "sent. Check your phone."))
+            return 1 if failed else 0
+        elif action == "startstop":
+            cfg.startstop = args.state == "on"
+            cfg.save()
+            print(f"Start/stop messages are {args.state}.")
+        elif action == "summary":
+            cfg.summary = push.parse_summary(" ".join(args.when))
+            cfg.save()
+            print(f"Summary: {push.describe_summary(cfg.summary)}.")
+            if cfg.summary:
+                print("If a summary doesn't arrive when expected, Noxis or the machine it runs on "
+                      "is down.")
+    except ValueError as e:
+        print(f"noxis: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_update_oui(args) -> int:
     print("Downloading the IEEE manufacturer registry...")
     count = update_from_ieee(data_dir())
@@ -791,7 +999,7 @@ def build_parser() -> argparse.ArgumentParser:
     x = al_sub.add_parser("set", help="set one rule's level in your preset")
     x.add_argument("name")
     x.add_argument("rule", help="rule (see `noxis alerts rules`) or a finding's name")
-    x.add_argument("level", choices=alerts.LEVELS)
+    x.add_argument("level", type=_level, metavar="{" + ",".join(alerts.LEVELS) + "}")
     x = al_sub.add_parser("delete", help="delete one of your presets")
     x.add_argument("name")
     x = al_sub.add_parser("use", help="pick the preset for this network (from the last scan)")
@@ -813,6 +1021,28 @@ def build_parser() -> argparse.ArgumentParser:
     x = mu_sub.add_parser("remove", help="remove a mute by its number in the list")
     x.add_argument("number", type=int)
     mu.set_defaults(func=cmd_mute)
+
+    pu = sub.add_parser("push", help="send alerts to your phone or any device (ntfy)")
+    pu_sub = pu.add_subparsers(dest="action")
+    pu_sub.add_parser("list", help="where push notifications go (default)")
+    x = pu_sub.add_parser("add", help="add a place to send them")
+    x.add_argument("service", choices=["ntfy"])
+    x.add_argument("topic", nargs="?", help="ntfy topic (default: a new random one)")
+    x.add_argument("--server", help="your own ntfy server, e.g. https://pi.example.ts.net "
+                                     "(default: the public https://ntfy.sh)")
+    x.add_argument("--token", help="ntfy access token, if the server needs one")
+    g = x.add_mutually_exclusive_group()
+    g.add_argument("--minimal", action="store_true",
+                   help="only say what kind of alert, no IPs or device names (default on ntfy.sh)")
+    g.add_argument("--full", action="store_true", help="send whole alerts (default on your own server)")
+    x = pu_sub.add_parser("remove", help="remove one by its number in the list")
+    x.add_argument("number", type=int)
+    pu_sub.add_parser("test", help="send a test message to each one now")
+    x = pu_sub.add_parser("startstop", help="a message when monitor or honeypot starts and stops")
+    x.add_argument("state", choices=["on", "off"])
+    x = pu_sub.add_parser("summary", help="a regular 'still watching' summary")
+    x.add_argument("when", nargs="+", help="a daily time like 09:00, 'every 6h', 'every 12h from 21:00', or 'off'")
+    pu.set_defaults(func=cmd_push)
 
     h = sub.add_parser("honeypot", help="run decoy services that alert when anyone touches them")
     h.add_argument("--ports", help="decoy ports, comma-separated (default: built-in list)")
