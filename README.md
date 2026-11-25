@@ -45,6 +45,7 @@ noxis update-oui         # once: download the IEEE manufacturer list (~5 MB)
 noxis scan --open        # scan and open the HTML report
 noxis trust --all        # after checking every device is yours
 noxis monitor --notify   # keep watching (on any machine that stays on)
+noxis service install --honeypot   # or keep watching in the background, from boot
 ```
 
 Somewhere unfamiliar, such as an Airbnb or hotel:
@@ -115,7 +116,7 @@ everything else is in the report at the end. The same goes for [push
 notifications](#push-notifications), which need no flag: once set up, they're on
 for `monitor`, `honeypot` and `sweep --honeypot`.
 
-`check`, `known` and `update-oui` take no flags. `alerts` and `mute` are described under [Alerts](#alerts), `push` under [Push notifications](#push-notifications).
+`check`, `known` and `update-oui` take no flags. `alerts` and `mute` are described under [Alerts](#alerts), `push` under [Push notifications](#push-notifications), `service` under [Run it in the background](#run-it-in-the-background).
 
 ## Trust
 
@@ -306,6 +307,48 @@ messages a day.
 Settings, including access tokens, are in `push.json`, readable only by you on
 Linux.
 
+## Run it in the background
+
+`noxis monitor` stops when you close the terminal. To keep it watching all the
+time, install it as a service:
+
+```powershell
+noxis service install --honeypot --interval 300   # any monitor options go here
+```
+
+| | Linux (a Pi, a server, an old PC) | Windows |
+|---|---|---|
+| Starts | When the computer starts, once the network is up | When you log on (`--at-startup`: when the computer starts) |
+| Keeps running | After you log out or close SSH | With no window, until you log off (`--at-startup`: always) |
+| If it crashes | Restarts after 30 seconds | Restarts after a minute |
+| Output | The system journal (`noxis service logs`) | `service.log` in the Noxis folder |
+| Needs | `sudo` once, to install | Nothing special |
+
+```powershell
+noxis service status      # running? since when? its latest output
+noxis service logs        # follow its output (Ctrl+C to stop following)
+noxis service pause       # stop watching; stays stopped, even after a restart
+noxis service resume      # start watching again
+noxis service uninstall   # remove it (your settings and logs stay)
+```
+
+The service uses the same settings as you: `noxis trust`, `alerts`, `mute` and
+`push` all apply to it, straight away. With [push notifications](#push-notifications)
+set up, you get a message when it starts, pauses, resumes, stops or crashes.
+
+**On Linux it runs as you, not as root.** It gets exactly two extra permissions:
+watching network packets (to name whoever sends a stealth scan and to spot
+network sweeps) and opening decoys on ports below 1024. That's everything the
+honeypot needs. Running it as root would also work, but the honeypot talks to
+whoever probes it, so it shouldn't have more power than it needs. `noxis service
+install` asks for `sudo` by itself, once.
+
+**On Windows**, with `--at-startup` Windows asks for your password (it needs it
+to run the task while nobody is logged on; Noxis never sees it). Started that way,
+`--notify` pop-ups can't show, but push notifications still work.
+
+Running as a service is supported on Linux and Windows. macOS isn't supported.
+
 ## How it identifies devices
 
 | Clue | Example |
@@ -462,9 +505,10 @@ the first.
   card won't show up in any scan.** Do the physical check in the sweep report.
 - **Sleeping phones and battery devices** can be missed in one scan. `sweep` and
   `monitor` help with this.
-- **Some checks need Linux as root:** naming who sent a stealth scan, and
-  detecting network sweeps. Any Linux machine works (a Pi, a homelab server, an
-  old PC).
+- **Some checks need Linux, with root or the Noxis service:** naming who sent a
+  stealth scan, and detecting network sweeps. Run `sudo noxis monitor`, or
+  `noxis service install`, which gets just the permission these need. Any Linux
+  machine works (a Pi, a homelab server, an old PC).
 - **Wi-Fi parsing on Windows reads English `netsh` output.**
 - **A perfect clone of a quiet device won't stand out.** Fingerprints catch a
   copied MAC only when the impostor behaves differently.
@@ -481,7 +525,7 @@ classifies devices, `services` names what each device hosts, `risk` turns that
 into findings, and `wifi`, `mitm`, `upnp` and `honeypot` are the other
 detectors. `report` handles terminal and HTML output, `store` keeps the
 trusted lists, `alerts` decides what's worth an alert (presets, mutes,
-repeats), and `push` sends alerts to ntfy.
+repeats), `push` sends alerts to ntfy, and `service` runs monitor in the background.
 
 ### Roadmap
 
@@ -493,7 +537,8 @@ repeats), and `push` sends alerts to ntfy.
   - [x] Monitor survives restarts and errors, shares trusted devices with `sudo` runs, and picks
         up `trust` changes while running
   - [x] Alert presets per network (`home`, `travel`, your own), mutes, no repeated alerts
-  - [ ] Runs as a background service: starts on boot, restarts if it crashes, survives closing SSH
+  - [x] Runs as a background service (`noxis service`): starts on boot or logon, restarts if it
+        crashes, survives closing SSH, pause and resume
   - [x] Push notifications through ntfy (public or self-hosted), with start/stop messages and a
         scheduled "still watching" summary
   - [ ] Root-only detection tested on real hardware: naming stealth scanners, network sweeps,

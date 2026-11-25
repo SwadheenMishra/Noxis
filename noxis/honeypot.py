@@ -405,7 +405,8 @@ class Honeypot:
         try:
             s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
         except (AttributeError, PermissionError, OSError) as e:
-            self.sniff_note = ("needs root" if isinstance(e, PermissionError) else "not supported here")
+            self.sniff_note = ("needs root, or run it with `noxis service install`"
+                              if isinstance(e, PermissionError) else "not supported here")
             return
         self.sniffing = True
         s.settimeout(1.0)

@@ -10,7 +10,7 @@ import time
 import webbrowser
 from datetime import datetime
 
-from . import __version__, alerts, mitm, push, report, risk, upnp, wifi
+from . import __version__, alerts, mitm, push, report, risk, service, upnp, wifi
 from .models import Finding
 from .oui import OuiDB, update_from_ieee
 from .probes import MAX_DEEP_CONNECTIONS
@@ -499,13 +499,23 @@ class _Heartbeat:
         return (f"{names}; start/stop messages {'on' if cfg.startstop else 'off'}, "
                 f"summary {push.describe_summary(cfg.summary)}")
 
+    @property
+    def as_service(self) -> bool:
+        return os.environ.get("NOXIS_SERVICE") == "1"
+
     def start(self) -> None:
+        resumed = self.as_service and service.take_event(self.alerter.store.root) == "resumed"
         if self.alerter.pusher is None:
             return
         if self.alerter.push_cfg.startstop:
-            self.alerter.push(push.status_message(
-                "Noxis started", f"{self.what} started on {self.host}.",
-                f"{self.what} started on {self.host}."))
+            if resumed:
+                self.alerter.push(push.status_message(
+                    "Noxis resumed", f"{self.what} on {self.host} is watching again.",
+                    f"{self.what} on {self.host} resumed."))
+            else:
+                self.alerter.push(push.status_message(
+                    "Noxis started", f"{self.what} started on {self.host}.",
+                    f"{self.what} started on {self.host}."))
         if self.alerter.push_cfg.summary:
             threading.Thread(target=self._loop, daemon=True, name="noxis-summary").start()
 
@@ -520,6 +530,15 @@ class _Heartbeat:
                     "Noxis crashed", f"{self.what} on {self.host} crashed ({crash}) {ran}. "
                     f"Details are in errors.log there.", f"{self.what} on {self.host} crashed.")
                 msg.priority, msg.tags = 4, ["warning"]
+            elif self.as_service and service.read_state(self.alerter.store.root).get("event") == "removed":
+                msg = push.status_message(
+                    "Noxis service removed", f"{self.what} on {self.host} was uninstalled {ran}, "
+                    "so it won't start again on its own.", f"{self.what} on {self.host} was uninstalled.")
+            elif self.as_service and service.read_state(self.alerter.store.root).get("event") == "paused":
+                msg = push.status_message(
+                    "Noxis paused", f"{self.what} on {self.host} was paused {ran}. It stays paused, "
+                    "even after a restart, until `noxis service resume`.",
+                    f"{self.what} on {self.host} was paused.")
             else:
                 msg = push.status_message(
                     "Noxis stopped", f"{self.what} on {self.host} was stopped (Ctrl+C, or the system "
@@ -580,7 +599,8 @@ def cmd_honeypot(args) -> int:
                                                f"{store.root / 'honeypot.log'}"))
         beat.start()
         while True:
-            time.sleep(1)
+            if service.STOP.wait(1):  # `noxis service pause` on Windows
+                raise KeyboardInterrupt
     except KeyboardInterrupt:
         alerter.term.out("\nStopped.")
     except BaseException as e:
@@ -665,7 +685,8 @@ def cmd_monitor(args) -> int:
                 t.out(t.c("medium", f"[{datetime.now():%H:%M:%S}] round failed ({type(e).__name__}: "
                                     f"{e}); trying again next round. Details: "
                                     f"{store.root / 'errors.log'}"))
-            time.sleep(args.interval)
+            if service.STOP.wait(args.interval):  # `noxis service pause` on Windows
+                raise KeyboardInterrupt
     except KeyboardInterrupt:
         t.out("\nStopped.")
     except BaseException as e:
@@ -911,6 +932,165 @@ def cmd_push(args) -> int:
     return 0
 
 
+def _service_monitor_options(options: list[str], root) -> list[str]:
+    """Check the monitor options now, so a typo fails here and not at 3 a.m."""
+    options = [o for o in options if o != "--"]
+    import contextlib
+    import io
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            parsed = build_parser().parse_args(["monitor", *options])
+    except SystemExit:
+        lines = [l for l in err.getvalue().splitlines() if l.strip()]
+        raise RuntimeError(f"Those monitor options don't work: "
+                           f"{lines[-1].split(': error: ')[-1] if lines else ' '.join(options)}")
+    if parsed.preset and not alerts.Config(root).exists(parsed.preset):
+        raise RuntimeError(f"No alert preset called '{parsed.preset}'. See `noxis alerts`.")
+    return options
+
+
+def _service_run(args) -> int:
+    """What the Windows task runs: `noxis monitor`, logging to service.log."""
+    os.environ["NOXIS_SERVICE"] = "1"
+    if args.home:
+        os.environ["NOXIS_HOME"] = args.home
+    root = data_dir()
+    log = service.open_log(root)
+    sys.stdout = sys.stderr = log
+    service.watch_stop_file(root)
+    try:
+        return main(["monitor", *[o for o in args.monitor_opts if o != "--"]])
+    finally:
+        log.flush()
+
+
+def cmd_service(args) -> int:
+    if args.action == "run":
+        return _service_run(args)
+    if why := service.supported():
+        raise RuntimeError(f"{why[0].upper()}{why[1:]}.")
+    root = data_dir()
+    linux = service.IS_LINUX
+    action = args.action or "status"
+    needs_root = linux and action in ("install", "pause", "resume", "uninstall")
+    if needs_root and os.geteuid() != 0:
+        print(f"`noxis service {action}` changes a system service, so it needs sudo. Running it "
+              "with sudo (you may be asked for your password)...", flush=True)
+        argv = ["service", action, *(["--user", args.user] if args.user else []),
+                *getattr(args, "monitor_opts", [])]
+        os.execvp("sudo", service.sudo_argv(argv, root))
+
+    if action != "install" and not (service.linux_installed() if linux else service.windows_installed()):
+        print("The Noxis service isn't installed. Install it with: noxis service install "
+              "[monitor options, e.g. --honeypot]")
+        return 0 if action == "status" else 1
+
+    if action == "install":
+        options = _service_monitor_options(args.monitor_opts, root)
+        command = "noxis monitor " + " ".join(options)
+        if linux:
+            user = service.linux_service_user(args.user)
+            service.linux_install(root, options, user)
+        else:
+            if args.at_startup:
+                print("Windows will ask for your password, so it can start Noxis while nobody is "
+                      "logged on. It goes to Windows, not to Noxis.")
+            service.windows_install(root, options, args.at_startup)
+        service.write_state(root, options=options, installed=datetime.now().isoformat(timespec="seconds"),
+                            paused=False, event=None)
+        print(f"Noxis service installed and started: {command.strip()}")
+        if linux:
+            print(f"  Runs as {user}, with only two extra permissions: watching packets (to name "
+                  "stealth scanners and spot network sweeps) and decoy ports below 1024.")
+            print("  Starts when the computer starts, restarts if it crashes, keeps running after "
+                  "you log out.")
+        else:
+            when = "the computer starts" if args.at_startup else "you log on"
+            print(f"  Starts when {when}, with no window. Output: {service.log_path(root)}")
+            if args.at_startup:
+                print("  Note: started this way, --notify pop-ups won't show (Windows doesn't "
+                      "allow it); push notifications still work.")
+        print(f"  Uses your settings in {root}: trust, alerts, mutes and push all apply.")
+        print("\n  noxis service status    how it's doing\n  noxis service logs      follow its "
+              "output\n  noxis service pause     stop until you resume it (stays stopped after a "
+              "restart)\n  noxis service uninstall remove it")
+        return 0
+
+    if action == "status":
+        st = service.linux_status() if linux else service.windows_status()
+        state = read = service.read_state(root)
+        paused = state.get("paused")
+        print(f"Noxis service: {'PAUSED' if paused else ('running' if st['running'] else 'not running')}"
+              f"  [{st['state']}]")
+        if st.get("since") and st["running"]:
+            print(f"  Since: {st['since']}")
+        if linux:
+            print(f"  Starts at boot: {'yes' if st['starts_on_boot'] else 'no'}"
+                  + (f", restarted {st['restarts']} times" if st.get("restarts") not in (None, "0") else ""))
+        else:
+            print(f"  Starts at {st['trigger']}: {'yes' if st['starts_on_boot'] else 'no (paused)'}")
+        print(f"  Runs: noxis monitor {' '.join(read.get('options', []))}".rstrip())
+        if paused:
+            print("  Resume with: noxis service resume")
+        recent = service.linux_recent_log() if linux else service.tail(service.log_path(root))
+        if recent:
+            print("\nRecent output:")
+            for line in recent:
+                print(f"  {line}")
+        elif linux:
+            print("\n(Can't read its log as you: try `sudo noxis service logs`.)")
+        return 0
+
+    if action == "logs":
+        if linux:
+            os.execvp("journalctl", ["journalctl", "-u", service.UNIT_NAME, "-f", "-n", "30"])
+        print(f"Following {service.log_path(root)} (Ctrl+C to stop)")
+        try:
+            service.follow(service.log_path(root))
+        except KeyboardInterrupt:
+            pass
+        return 0
+
+    if action == "pause":
+        if service.read_state(root).get("paused"):
+            print("Already paused. Resume with: noxis service resume")
+            return 0
+        service.write_state(root, paused=True, event="paused")
+        if linux:
+            service.linux_pause()
+        else:
+            print("Asking Noxis to stop after its current scan (up to 2 minutes)...", flush=True)
+            if not service.windows_pause(root):
+                print("  It didn't stop in time, so Windows ended it (no 'paused' notification).")
+        print("Paused. It stays paused, even after a restart, until: noxis service resume")
+        return 0
+
+    if action == "resume":
+        service.write_state(root, paused=False, event="resumed")
+        if linux:
+            service.linux_resume()
+        else:
+            service.windows_resume(root)
+        print("Resumed: Noxis is watching again.")
+        return 0
+
+    if action == "uninstall":
+        service.write_state(root, event="removed")  # so its last push says so
+        if linux:
+            service.linux_uninstall()
+        else:
+            service.windows_uninstall(root)
+        try:
+            service.state_path(root).unlink()
+        except FileNotFoundError:
+            pass
+        print("The Noxis service is removed. Your settings and logs are still in "
+              f"{root}.")
+        return 0
+    return 0
+
+
 def cmd_update_oui(args) -> int:
     print("Downloading the IEEE manufacturer registry...")
     count = update_from_ieee(data_dir())
@@ -1044,6 +1224,20 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("when", nargs="+", help="a daily time like 09:00, 'every 6h', 'every 12h from 21:00', or 'off'")
     pu.set_defaults(func=cmd_push)
 
+    sv = sub.add_parser("service", allow_abbrev=False,
+                        help="run monitor in the background: at boot (Linux) or logon (Windows)",
+                        description="Run `noxis monitor` in the background. Monitor options go after "
+                                    "the action, e.g.: noxis service install --honeypot --interval 300")
+    sv.add_argument("action", nargs="?", choices=["install", "status", "logs", "pause", "resume",
+                                                  "uninstall", "run"],
+                    help="install [monitor options] | status (default) | logs | pause | resume | uninstall")
+    sv.add_argument("--at-startup", action="store_true",
+                    help="Windows: start when the computer starts, not when you log on (asks for your "
+                         "Windows password; --notify pop-ups won't show, push still works)")
+    sv.add_argument("--user", help="Linux: the account to run as (default: whoever ran sudo)")
+    sv.add_argument("--home", help=argparse.SUPPRESS)  # data folder, for `service run`
+    sv.set_defaults(func=cmd_service, monitor_opts=[])
+
     h = sub.add_parser("honeypot", help="run decoy services that alert when anyone touches them")
     h.add_argument("--ports", help="decoy ports, comma-separated (default: built-in list)")
     h.add_argument("--lure", action="store_true", help=LURE_HELP)
@@ -1082,7 +1276,15 @@ def main(argv: list[str] | None = None) -> int:
         except (AttributeError, ValueError):
             pass
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw = list(argv if argv is not None else sys.argv[1:])
+    if raw[:1] == ["service"]:
+        # Everything `service` doesn't know is passed on to `noxis monitor`.
+        args, extra = parser.parse_known_args(raw)
+        args.monitor_opts = extra
+        if extra and args.action not in ("install", "run"):
+            parser.error(f"unrecognized arguments: {' '.join(extra)}")
+    else:
+        args = parser.parse_args(argv)
     if not args.command:
         args = parser.parse_args(["scan", *(argv if argv is not None else sys.argv[1:])])
     if getattr(args, "deep_connections", None) and getattr(args, "deep", None) is None:
@@ -1091,7 +1293,7 @@ def main(argv: list[str] | None = None) -> int:
         report.banner(report.Term(), BANNER_STATUS[args.command])
     try:
         return args.func(args)
-    except (ScanError, RuntimeError) as e:
+    except (ScanError, RuntimeError, service.ServiceError) as e:
         print(f"noxis: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

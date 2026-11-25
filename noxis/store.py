@@ -43,6 +43,7 @@ def data_dir() -> Path:
     home = os.environ.get("NOXIS_HOME") or os.environ.get("WARDEN_HOME")  # old name still works
     if home:
         path = Path(home)
+        _sudo_home()  # under sudo, files created here still belong to the invoking user
     else:
         base = _sudo_home() or Path.home()
         path = base / ".noxis"
