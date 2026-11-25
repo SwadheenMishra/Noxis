@@ -546,21 +546,20 @@ repeats), `push` sends alerts to ntfy, and `service` runs monitor in the backgro
   - [ ] Linux code paths tested live: network settings (`ip`), nearby Wi-Fi (`nmcli`), DNS
         (`resolv.conf`)
 - [ ] Wi-Fi deauth detection (ESP32 sensor)
-- [ ] DNS-based spyware and beaconing detection (an always-on box as the network's DNS)
 - [ ] Tailscale-aware interface handling
 
 ## Contributing
 
 Bug reports, feature ideas and feedback are very welcome in Issues. Noxis
 doesn't accept code contributions, so pull requests won't be merged. See
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/SwadheenMishra/Noxis/blob/main/CONTRIBUTING.md).
 
 ## License
 
 Copyright (C) 2026 Swadheen Mishra
 
 Noxis is free software, licensed under the
-[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). You can use,
+[GNU Affero General Public License v3.0](https://github.com/SwadheenMishra/Noxis/blob/main/LICENSE) (AGPL-3.0-only). You can use,
 study, modify and share it. If you distribute a modified version, or let other
 people use one over a network, you must publish its source under the same
 license.
