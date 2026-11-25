@@ -4,13 +4,32 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "noxis"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "Local network security scanner: finds devices, identifies what they are, flags suspicious ones."
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = []
+authors = [{ name = "Swadheen Mishra" }]
+keywords = ["network", "security", "scanner", "honeypot", "hidden camera", "evil twin", "arp spoofing",
+            "raspberry pi", "ntfy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: System Administrators",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Security",
+    "Topic :: System :: Networking :: Monitoring",
+]
+
+[project.urls]
+Homepage = "https://github.com/SwadheenMishra/Noxis"
+Issues = "https://github.com/SwadheenMishra/Noxis/issues"
 
 [project.scripts]
 noxis = "noxis.__main__:main"

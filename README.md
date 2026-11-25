@@ -1,4 +1,4 @@
-﻿# Noxis
+# Noxis
 
 *Your network's night watch.*
 
@@ -22,7 +22,7 @@ tampering with your connection. Then it keeps watching.
   including fake login pages and interception tools
 
 It's pure Python with **no dependencies** and **no admin rights needed**. It
-runs on Windows, Linux and macOS.
+runs on Windows and Linux (macOS isn't supported yet).
 
 For 24/7 monitoring, run it on any machine that stays on: a homelab server, an
 old PC, a laptop or a Raspberry Pi. **Linux is recommended for monitoring.**
@@ -304,7 +304,7 @@ messages a day.
 
 `noxis push list` shows where messages go, and `noxis push remove 1` removes one.
 Settings, including access tokens, are in `push.json`, readable only by you on
-Linux and macOS.
+Linux.
 
 ## How it identifies devices
 
