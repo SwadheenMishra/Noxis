@@ -14,7 +14,7 @@ import shutil
 import urllib.request
 from pathlib import Path
 
-from .util import is_randomized_mac
+from .util import fix_owner, is_randomized_mac
 
 _BUILTIN: dict[str, list[str]] = {
     "Espressif": [
@@ -132,5 +132,6 @@ def update_from_ieee(data_dir: Path) -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
     tmp = data_dir / "oui.tsv.tmp"
     tmp.write_text("\n".join(rows), encoding="utf-8")
+    fix_owner(tmp)
     tmp.replace(data_dir / "oui.tsv")
     return len(rows)

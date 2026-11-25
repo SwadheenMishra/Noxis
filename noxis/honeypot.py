@@ -28,7 +28,7 @@ from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-from .util import failed_connects
+from .util import append_line, failed_connects
 
 # port -> (service, banner sent on connect, reply after the visitor's first line)
 DECOYS: dict[int, tuple[str, bytes, bytes]] = {
@@ -142,13 +142,13 @@ class Detector:
                 f"{ho} connections to this computer were started and abandoned halfway within "
                 f"{int(self.half_open_window)}s. That's how stealth scans (nmap's default "
                 "mode, masscan) probe for open ports without ever connecting. Windows doesn't "
-                "record who sent them; Noxis on the Pi (as root) can name the scanner.")]
+                "record who sent them; Noxis on Linux (as root) can name the scanner.")]
         if rs >= self.rst_burst and not self._cooldown(("stealth",), now):
             return [HoneypotAlert(
                 "high", "Port scan detected", "",
                 f"This computer turned away {rs} connection attempts to closed ports within "
                 f"{int(self.rst_window)}s. Something is scanning it. Windows doesn't record "
-                "who; Noxis on the Pi (as root) can name the scanner.")]
+                "who; Noxis on Linux (as root) can name the scanner.")]
         return []
 
     def handle(self, ev: HoneypotEvent) -> list[HoneypotAlert]:
@@ -336,12 +336,19 @@ class Honeypot:
         self._lock = threading.Lock()
         self._ready = threading.Event()
 
+    def set_local(self, local_ip: str, local_mac: str | None) -> None:
+        """This machine's address changed (DHCP renewal, another network):
+        watch for scans of the new one, and don't flag our own traffic."""
+        with self._lock:
+            self.local_ip = local_ip
+            self.detector.own_ips = {local_ip}
+            self.detector.own_macs = {local_mac} if local_mac else set()
+
     def _record(self, ev: HoneypotEvent) -> None:
         with self._lock:
             alerts = self.detector.handle(ev)
             if self.log_path and ev.kind == "connect":
-                with open(self.log_path, "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(asdict(ev)) + "\n")
+                append_line(self.log_path, json.dumps(asdict(ev)))
         for a in alerts:
             self.on_alert(a)
 
@@ -446,7 +453,7 @@ class Honeypot:
             threading.Thread(target=self._sniff, args=(stop,), daemon=True,
                              name="noxis-sniffer").start()
         else:
-            self.sniff_note = "Linux only (run Noxis on the Pi as root)"
+            self.sniff_note = "needs Linux, running as root"
         if sys.platform == "win32" and self._read_counters() is not None:
             self.counting = True
             threading.Thread(target=self._watch_counters, args=(stop,), daemon=True,

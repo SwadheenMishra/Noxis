@@ -35,7 +35,7 @@ class Term:
         return f"{_COLORS[key]}{text}{_COLORS['reset']}" if self.color else text
 
     def out(self, text: str = "") -> None:
-        print(text, file=self.stream)
+        print(text, file=self.stream, flush=True)  # live, even into a pipe or the systemd journal
 
 
 def _terminal_width(t: "Term") -> int:

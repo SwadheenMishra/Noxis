@@ -29,6 +29,33 @@ def run(args: list[str], timeout: float = 15) -> str:
     return proc.stdout.decode(errors="replace")
 
 
+# When Noxis runs under sudo, its files live in the invoking user's home and
+# are handed back to that user, so their own (non-root) runs can still
+# update them. None = leave ownership alone.
+_owner: tuple[int, int] | None = None
+
+
+def set_owner(uid: int, gid: int) -> None:
+    global _owner
+    _owner = (uid, gid)
+
+
+def fix_owner(path) -> None:
+    if _owner is None:
+        return
+    try:
+        os.chown(path, *_owner)
+    except (OSError, AttributeError):
+        pass
+
+
+def append_line(path, line: str) -> None:
+    """Append one line to a log file (created with the right owner)."""
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(line.rstrip("\n") + "\n")
+    fix_owner(path)
+
+
 def normalize_mac(mac: str | None) -> str | None:
     """'7C-A9-6B-12-34-56' / '0:1b:2:...' -> '7c:a9:6b:12:34:56'."""
     if not mac:

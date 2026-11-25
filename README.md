@@ -25,8 +25,11 @@ It's pure Python with **no dependencies** and **no admin rights needed**. It
 runs on Windows, Linux and macOS.
 
 For 24/7 monitoring, run it on any machine that stays on: a homelab server, an
-old PC or a laptop. A Raspberry Pi is the recommended choice because it uses
-very little power, but Noxis doesn't need one.
+old PC, a laptop or a Raspberry Pi. **Linux is recommended for monitoring.**
+Running as root there, Noxis can name the device behind a stealth scan and spot
+devices mapping your network, which it can't do on Windows. A Raspberry Pi is a
+good choice for running it long-term because it uses very little power, but
+any old machine works.
 
 > **Status:** early development (0.1). Expect rough edges, and only scan
 > networks you're allowed to.
@@ -56,7 +59,7 @@ noxis sweep --honeypot --open
 |---|---|---|---|---|
 | `scan` | You want a snapshot of a network right now: your home, or a quick first look anywhere | One pass: finds devices, identifies them and their services, checks nearby Wi-Fi and your connection | ~40 s | A terminal summary and an HTML report |
 | `sweep` | You're somewhere you don't trust, such as an Airbnb, hotel or office, and want a thorough check before relaxing | Several scans spaced apart, merged into one report. Devices that sleep (battery cameras, phones) get more chances to show up. Adds a physical-search checklist | ~6 min by default | A timestamped HTML report you can keep as evidence |
-| `monitor` | You want to keep watch over a network you live on, for hours or 24/7 | Scans again every few minutes and alerts when a new device joins or something high-risk appears. Runs until you stop it | Until stopped | Alerts on screen, in `alerts.log` and (on Windows) as pop-ups |
+| `monitor` | You want to keep watch over a network, for hours or 24/7 | Scans again every few minutes and alerts on what your [alert preset](#alerts) cares about: a new device joining, something high-risk appearing, someone touching the honeypot. Remembers what it has seen across restarts. Runs until you stop it | Until stopped | Alerts on screen, in `alerts.log` and, with `--notify`, as desktop pop-ups |
 | `check` | You've just joined a network and only want to know whether it's tampering with your connection | Only the connection checks: HTTPS interception, DNS, page tampering and router port forwards. No device scan | ~5-10 s | A pass/fail list (exit code 1 if anything is high) |
 | `honeypot` | You want to know whether anyone is probing this computer, without scanning anything yourself | Runs fake services (Telnet, FTP, SSH, databases...) and alerts on anyone who touches them | Until stopped | Alerts and `honeypot.log` |
 
@@ -98,17 +101,19 @@ Which modes accept which flag. "-" means the flag doesn't apply to that mode.
 | `--rounds N` | How many scans the sweep runs (default 4) | - | ✓ | - | - |
 | `--wait SECONDS` | Pause between sweep rounds (default 30) | - | ✓ | - | - |
 | `--interval SECONDS` | Pause between monitor scans (default 300) | - | - | ✓ | - |
+| `--preset NAME` | Use this [alert preset](#alerts) for the whole run, instead of each network's own | - | - | ✓ | - |
+| `--remind HOURS` | Alert again about a problem that's still there after this many hours (default: never) | - | - | ✓ | - |
 | `--honeypot` | Also run the decoy services, for as long as the sweep or monitor runs. Sweep hits go in the report | - | ✓ | ✓ | always on |
 | `--lure` | Also run a fake web login on port 80 so casual scanners can see this computer and walk into the decoys. Turns the honeypot on. You're invisible again when Noxis stops | - | ✓ | ✓ | ✓ |
 | `--ports 23,2323,...` | Choose which decoy ports the honeypot opens | - | ✓ | ✓ | ✓ |
 | `--bind ADDRESS` | Address the decoys listen on (`127.0.0.1` to test on this computer only) | - | - | - | ✓ |
-| `--notify` | Windows pop-up for each alert (Windows only for now) | - | ✓ * | ✓ | ✓ |
-| `--beep` | Terminal beep for each alert | - | ✓ * | ✓ | ✓ |
+| `--notify` | Desktop pop-up for each alert. Windows, and Linux with a desktop (needs `notify-send`: `sudo apt install libnotify-bin`). Works under `sudo` too. Not on a machine you only reach over SSH | - | ✓ * | ✓ | ✓ |
+| `--beep` | Terminal beep for each alert, on any OS. Over SSH, the beep plays on the computer you're connecting from. Needs the terminal's bell turned on | - | ✓ * | ✓ | ✓ |
 
 \* In a sweep, `--notify` and `--beep` fire for honeypot alerts as they happen;
 everything else is in the report at the end.
 
-`check`, `known` and `update-oui` take no flags.
+`check`, `known` and `update-oui` take no flags. `alerts` and `mute` are described under [Alerts](#alerts).
 
 ## Trust
 
@@ -126,7 +131,101 @@ devices are yours, trust them, and from then on only changes stand out.
 
 Trust is per network: trusting your home devices doesn't make them trusted on a
 hotel's Wi-Fi. Trusting works on the most recent `scan`, `sweep` or `monitor`
-round, so run one first.
+round, so run one first. A running monitor picks up `trust` and `forget`
+straight away; there's no need to restart it.
+
+## Alerts
+
+`monitor` and the honeypot don't alert on everything they find, because what's
+worth an alert depends on where you are. On your home network, a new device
+joining is news. In a hotel, other guests' devices are normal. So Noxis uses an
+**alert preset**: a list saying how loudly to report each kind of problem.
+
+**Most people don't need to change anything.** Two presets are built in, and
+Noxis picks one for each network:
+
+| | `home` | `travel` |
+|---|---|---|
+| **Used on** | Networks where you've trusted devices | Every other network |
+| A new device joins | Alert | Ignored |
+| High-risk problem (camera, evil twin, connection tampering...) | Alert | Alert |
+| Medium problem (untrusted device, DNS server changed...) | Logged only | Logged only |
+| Someone touches or scans the honeypot | Phone \* | Phone \* |
+| A device maps every address on the network | Phone \* | Alert |
+
+> **Tip:** run `noxis trust --all` on your home network before you start
+> monitoring it. Until you've trusted at least one device there, Noxis treats
+> it like a hotel and won't tell you about new devices.
+
+What each level means:
+
+| Level | What happens |
+|---|---|
+| `off` | Nothing |
+| `log` | Written to `alerts.log`, nothing on screen |
+| `alert` | Shown on screen and written to `alerts.log`, with `--beep` and `--notify` if you turned them on |
+| `phone` \* | Same as `alert` for now. Sending alerts to your phone is coming later |
+
+### Changing what alerts you
+
+The built-in presets can't be edited. Make your own copy and change that:
+
+```powershell
+noxis alerts                                    # which preset this network uses
+noxis alerts show home                          # what each kind of alert is set to
+noxis alerts new myhome --from home             # make your own copy
+noxis alerts set myhome network-medium alert    # e.g. alert on medium network problems, like a DNS change
+noxis alerts use myhome                         # use it on this network
+```
+
+"This network" means the network of your most recent scan, the same as for
+`noxis trust`. A few more options:
+
+- `noxis alerts rules` lists every kind of alert you can set.
+- You can also set one specific problem by its name, e.g.
+  `noxis alerts set myhome dns-server-changed phone`. Every line in `alerts.log`
+  shows both names in brackets, e.g. `[network-medium | dns-server-changed]`: the
+  first is the general kind, the second the exact problem. Either one works.
+- `noxis alerts use myhome --default untrusted` uses it on every network you
+  haven't trusted any devices on. Use `--default trusted` for the others.
+- `noxis alerts use auto` lets Noxis pick for this network again.
+- `noxis monitor --preset myhome` uses it for one run only.
+
+### Muting one alert
+
+If something keeps alerting and you've checked that it's fine, mute it. Muted
+alerts are still written to `alerts.log`, marked as muted, so nothing is hidden.
+They just stop interrupting you. A mute can be narrowed down so it only covers
+exactly what you checked:
+
+```powershell
+noxis mute add network-sweep --from 192.168.1.1 --between 02:00-03:00 --note "router's nightly check"
+noxis mute list
+noxis mute remove 1
+```
+
+| Option | Only mutes it... |
+|---|---|
+| `--from IP_OR_MAC` | when it comes from this device |
+| `--network this` | on this network (the most recent scan's) |
+| `--between 02:00-03:00` | in this daily time window (can cross midnight, e.g. `23:00-01:00`) |
+| `--note "..."` | (doesn't limit anything: a reminder of why, shown in `mute list`) |
+
+### How the monitor avoids repeating itself
+
+- You're told about a problem **once**, when it appears, not every round.
+- If it goes away (missing for 3 rounds in a row) and later comes back, you're
+  told again.
+- A device that's switched off or asleep doesn't count as fixed. A camera that
+  sleeps between rounds won't alert every time it wakes up.
+- `--remind 12` repeats problems that still aren't fixed, every 12 hours.
+- The monitor remembers all this across restarts and reboots. Restarting it
+  doesn't repeat old alerts, and a device that joined while it was off is still
+  reported.
+- Each network is remembered separately, so taking a laptop to a cafe doesn't
+  flag every device there as new.
+- Changes from `noxis trust`, `noxis alerts` and `noxis mute` apply to a monitor
+  that's already running. No restart needed.
 
 ## How it identifies devices
 
@@ -246,11 +345,24 @@ Hits from your trusted devices are downgraded to medium. On Windows, allow
 Python through the firewall, including on "Public" networks, or other devices
 can't reach the decoys.
 
+**Your own scans trip your own honeypot, on purpose.** If you run `noxis scan`
+from your laptop while another machine runs the honeypot, that machine will
+report it. The
+alert names your laptop, so you'll recognise it. Noxis doesn't skip its own
+scans, because then an attacker could scan you with Noxis, or pretend to be
+your laptop, and go unnoticed. If a scan you run on a schedule gets noisy,
+[mute it](#muting-one-alert) for that device and time.
+
 ## Data and privacy
 
 Everything stays on your machine, in `~/.noxis` (`%USERPROFILE%\.noxis` on
-Windows): trusted devices, the last scan, reports, `alerts.log` and
-`honeypot.log`. Set `NOXIS_HOME` to use another folder.
+Windows): trusted devices, the last scan, reports, alert settings
+(`alerts.json`), what the monitor remembers (`monitor_state.json`), `alerts.log`,
+`honeypot.log` and `errors.log`. Set `NOXIS_HOME` to use another folder.
+
+Under `sudo` (needed on Linux for stealth-scan and network-sweep detection),
+Noxis uses your own `~/.noxis`, not root's, and leaves the files owned by you. So
+`sudo noxis monitor` and a plain `noxis trust` share the same trusted devices.
 
 Noxis used to be called Warden. On its first run it copies an existing
 `~/.warden` folder to `~/.noxis`, so trusted devices and logs carry over; the
@@ -287,8 +399,9 @@ python -m unittest discover -s tests -t .
 The layout is one module per job: `scanner` runs discovery, `fingerprint`
 classifies devices, `services` names what each device hosts, `risk` turns that
 into findings, and `wifi`, `mitm`, `upnp` and `honeypot` are the other
-detectors. `report` handles terminal and HTML output, and `store` keeps the
-trusted lists.
+detectors. `report` handles terminal and HTML output, `store` keeps the
+trusted lists, and `alerts` decides what's worth an alert (presets, mutes,
+repeats).
 
 ### Roadmap
 
@@ -296,9 +409,12 @@ trusted lists.
 - [x] Faster network-settings lookup on Windows (Windows API instead of PowerShell: ~0.3 s instead of 7-12 s)
 - [x] Services inventory: what each device hosts, risky services (open proxies, rogue DNS,
       fake login pages, interception tools), service trust and nicknames, change detection, `--deep`
-- [ ] Always-on monitoring, on any Linux machine that stays on (a Pi, homelab server, old PC):
+- [ ] Always-on monitoring, on any machine that stays on (Linux recommended: a Pi, homelab server, old PC):
+  - [x] Monitor survives restarts and errors, shares trusted devices with `sudo` runs, and picks
+        up `trust` changes while running
+  - [x] Alert presets per network (`home`, `travel`, your own), mutes, no repeated alerts
   - [ ] Runs as a background service: starts on boot, restarts if it crashes, survives closing SSH
-  - [ ] Alerts that reach your phone (`--notify` only makes Windows pop-ups)
+  - [ ] Alerts that reach your phone (`--notify` only shows desktop pop-ups)
   - [ ] Root-only detection tested on real hardware: naming stealth scanners, network sweeps,
         rogue DHCP servers
   - [ ] Linux code paths tested live: network settings (`ip`), nearby Wi-Fi (`nmcli`), DNS
