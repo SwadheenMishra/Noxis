@@ -34,13 +34,51 @@ any old machine works.
 > **Status:** early development (0.1). Expect rough edges, and only scan
 > networks you're allowed to.
 
+## Install
+
+Noxis needs Python 3.10 or newer. The easiest way to install it is
+[pipx](https://pipx.pypa.io), which gives Noxis its own private Python
+environment and puts the `noxis` command on your PATH.
+
+**Linux** (Raspberry Pi OS, Debian, Ubuntu...):
+
+```bash
+sudo apt install pipx
+pipx ensurepath          # then open a new terminal
+pipx install noxis
+```
+
+**Windows** (PowerShell):
+
+```powershell
+py -m pip install --user pipx
+py -m pipx ensurepath    # then open a new terminal
+pipx install noxis
+```
+
+Check it worked with `noxis --version`. Later, `pipx upgrade noxis` updates it.
+
+<details>
+<summary>Without pipx, and two things that can trip you up</summary>
+
+- **Plain pip** works too: `pip install noxis` on Windows (or `py -m pip install
+  noxis`). Newer Linux systems (Raspberry Pi OS, Debian 12+, Ubuntu 23.04+) refuse
+  `pip install` outside a virtual environment, so make one first:
+  `python3 -m venv ~/noxis-env && ~/noxis-env/bin/pip install noxis`.
+- **"noxis: command not found" on Windows**: pip installed the command into a
+  folder that isn't on your PATH (it prints a warning saying which). Run it as
+  `py -m noxis` instead, or use pipx.
+- **"sudo: noxis: command not found" on Linux**: `sudo` doesn't look in the
+  folder pipx uses. Give the full path: `sudo ~/.local/bin/noxis monitor --honeypot`.
+  (`noxis service install` handles this by itself.)
+- **After upgrading**, restart the background service so it runs the new
+  version: `noxis service pause`, then `noxis service resume`.
+
+</details>
+
 ## Quick start
 
 ```powershell
-git clone <this repo>
-cd Noxis
-pip install -e .          # installs the `noxis` command (or use `python -m noxis`)
-
 noxis update-oui         # once: download the IEEE manufacturer list (~5 MB)
 noxis scan --open        # scan and open the HTML report
 noxis trust --all        # after checking every device is yours
@@ -516,7 +554,13 @@ the first.
 
 ## Development
 
+To work on Noxis itself, install it from the source, editable, so your changes
+take effect without reinstalling:
+
 ```powershell
+git clone https://github.com/SwadheenMishra/Noxis
+cd Noxis
+pip install -e .
 python -m unittest discover -s tests -t .
 ```
 
