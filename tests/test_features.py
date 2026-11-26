@@ -97,6 +97,64 @@ class WifiTests(unittest.TestCase):
         self.assertEqual((aps[0].ssid, aps[0].bssid, aps[0].auth), ("IPC-1234", "aa:bb:cc:dd:ee:ff", "Open"))
 
 
+class WifiRescanTests(unittest.TestCase):
+    """nmcli returns an old list when a fresh scan isn't allowed: say so."""
+
+    PERMS = ("org.freedesktop.NetworkManager.network-control:yes\n"
+             "org.freedesktop.NetworkManager.wifi.scan:{v}\n")
+
+    def allowed(self, value, root=False):
+        from unittest import mock
+        with mock.patch.object(wifi, "IS_WINDOWS", False), \
+                mock.patch("os.geteuid", create=True, return_value=0 if root else 1000), \
+                mock.patch.object(wifi, "run", return_value=self.PERMS.format(v=value)):
+            return wifi.rescan_allowed()
+
+    def test_permission(self):
+        self.assertTrue(self.allowed("yes"))
+        self.assertFalse(self.allowed("no"))
+        self.assertFalse(self.allowed("auth"))  # would need a password prompt nobody sees
+        self.assertTrue(self.allowed("no", root=True))
+
+    def test_no_networkmanager_means_no_warning(self):
+        from unittest import mock
+        with mock.patch.object(wifi, "IS_WINDOWS", False), \
+                mock.patch("os.geteuid", create=True, return_value=1000), \
+                mock.patch.object(wifi, "run", return_value=""):
+            self.assertTrue(wifi.rescan_allowed())
+
+    def test_report_says_list_may_be_old(self):
+        import io
+        from noxis import report
+        net = NetworkInfo(local_ip="192.168.1.70", prefix=24, gateway_ip="192.168.1.1", cidr="192.168.1.0/24",
+                          ssid="HomeNet-5G")
+        r = ScanResult(network=net, devices=[], started="2026-01-01T00:00:00", wifi_scanned=True,
+                       wifi_stale=True)
+        out = io.StringIO()
+        report._nearby_lines(report.Term(out), r)
+        self.assertIn("Possibly out of date", out.getvalue())
+        self.assertIn("noxis service install", out.getvalue())
+        self.assertIn("Possibly out of date", "".join(report._html_nearby(r)))
+        r.wifi_stale = False
+        self.assertNotIn("Possibly out of date", "".join(report._html_nearby(r)))
+
+    def test_power_save_hint(self):
+        from unittest import mock
+        answers = {("iw", "dev"): "phy#0\n\tInterface wlan0\n\t\ttype managed\n",
+                   ("iw", "dev", "wlan0", "get", "power_save"): "Power save: on\n",
+                   ("nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"):
+                       "HomeNet-5G:wlan0\nlo:lo\n"}
+        with mock.patch.object(wifi, "IS_WINDOWS", False), \
+                mock.patch.object(wifi, "run", side_effect=lambda cmd, **kw: answers.get(tuple(cmd), "")):
+            hint = wifi.power_save_hint()
+        self.assertIn("sudo iw dev wlan0 set power_save off", hint)
+        self.assertIn('sudo nmcli connection modify "HomeNet-5G" 802-11-wireless.powersave 2', hint)
+        answers[("iw", "dev", "wlan0", "get", "power_save")] = "Power save: off\n"
+        with mock.patch.object(wifi, "IS_WINDOWS", False), \
+                mock.patch.object(wifi, "run", side_effect=lambda cmd, **kw: answers.get(tuple(cmd), "")):
+            self.assertIsNone(wifi.power_save_hint())
+
+
 class TrustDnsTests(unittest.TestCase):
     def test_trust_all_saves_dns(self):
         import os

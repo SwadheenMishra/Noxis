@@ -390,6 +390,25 @@ honeypot needs. Running it as root would also work, but the honeypot talks to
 whoever probes it, so it shouldn't have more power than it needs. `noxis service
 install` asks for `sudo` by itself, once.
 
+If the machine uses NetworkManager (Raspberry Pi OS, Ubuntu, Fedora and most
+desktops), the install also lets your account ask for fresh Wi-Fi scans, so the
+nearby-Wi-Fi check (evil twins, camera hotspots) sees what's around now instead
+of an old list. That's one polkit rule allowing only that, and `noxis service
+uninstall` removes it.
+
+**On a Raspberry Pi (or any Linux machine on Wi-Fi), turn off Wi-Fi power
+saving.** It's on by default on a Pi, and the Wi-Fi chip then naps and misses
+some packets: in testing, about a fifth of a network sweep. Noxis tells you when
+it's on. To turn it off for good (use your Wi-Fi connection's name, from
+`nmcli connection show`), then reconnect or reboot:
+
+```
+sudo nmcli connection modify "Your Wi-Fi" 802-11-wireless.powersave 2
+```
+
+A Pi 5 also needs its full 5A power supply for 24/7 use: on a 3A phone charger it
+can switch itself off when busy.
+
 **On Windows**, with `--at-startup` Windows asks for your password (it needs it
 to run the task while nobody is logged on; Noxis never sees it). Started that way,
 `--notify` pop-ups can't show, but push notifications still work.

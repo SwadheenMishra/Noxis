@@ -426,14 +426,15 @@ def _start_honeypot(args, store: Store, alerter: Alerter, stop: threading.Event,
             stamp = f"{datetime.now():%H:%M:%S}"
             collect.append(Finding(severity, f"Honeypot: {a.title} from {who}", f"[{stamp}] {detail}"))
 
+    t = alerter.term
     ports = [int(p) for p in args.ports.split(",")] if getattr(args, "ports", None) else None
     hp = Honeypot(net.local_ip, net.local_mac, on_alert, log_path=store.root / "honeypot.log",
                   ports=ports, bind=getattr(args, "bind", None) or "0.0.0.0",
-                  lure=getattr(args, "lure", False))
+                  lure=getattr(args, "lure", False),
+                  on_note=lambda msg: t.out(t.c("medium", f"  [{datetime.now():%H:%M:%S}] {msg}")))
     hp.start(stop)
     threading.Thread(target=live.keep_fresh, args=(hp, stop), daemon=True,
                      name="noxis-netwatch").start()
-    t = alerter.term
     t.out(t.c("bold", "Honeypot is up") + t.c("dim", f" on {net.local_ip}"))
     t.out(f"  Decoy ports: {', '.join(map(str, hp.listening)) or 'none'}")
     if getattr(args, "lure", False):
@@ -444,7 +445,9 @@ def _start_honeypot(args, store: Store, alerter: Alerter, stop: threading.Event,
     for port, why in sorted(hp.skipped.items()):
         t.out(t.c("dim", f"  Skipped {port}: {why}"))
     if hp.sniffing:
-        t.out("  Stealth-scan and network-sweep detection: on")
+        t.out("  Stealth-scan and network-sweep detection: on"
+              + ("" if hp.filtered else " (without a kernel filter: it may miss scans while "
+                                        "this computer is busy)"))
     elif hp.counting:
         t.out("  Stealth-scan detection: on (Windows can't tell who is scanning; "
               "network-sweep detection needs Linux as root)")
@@ -612,6 +615,18 @@ def cmd_honeypot(args) -> int:
     return 0
 
 
+def _linux_hints(wifi_check: bool = True) -> list[str]:
+    """Things on this Linux machine that make Noxis miss things, with the fix."""
+    if not service.IS_LINUX:
+        return []
+    hints = []
+    if wifi_check and not wifi.rescan_allowed():
+        hints.append(f"Nearby Wi-Fi: {wifi.STALE_NOTE}")
+    if hint := wifi.power_save_hint():
+        hints.append(hint)
+    return hints
+
+
 def _monitor_round(result, state: alerts.MonitorState, alerter: Alerter,
                    remind: float | None, shown: dict, beat: "_Heartbeat | None" = None) -> None:
     """Turn one scan into alerts. `shown` remembers which preset was announced
@@ -669,6 +684,8 @@ def cmd_monitor(args) -> int:
     beat = _Heartbeat(alerter, f"Monitor (scans every {every}{', honeypot on' if honeypot else ''})",
                       stop)
     t.out(t.c("dim", f"Push notifications: {beat.describe()}"))
+    for hint in _linux_hints(wifi_check=not args.no_wifi):
+        t.out(t.c("medium", hint))
     crash = None
     try:
         if honeypot:
@@ -992,7 +1009,7 @@ def cmd_service(args) -> int:
         command = "noxis monitor " + " ".join(options)
         if linux:
             user = service.linux_service_user(args.user)
-            service.linux_install(root, options, user)
+            rule = service.linux_install(root, options, user)
         else:
             if args.at_startup:
                 print("Windows will ask for your password, so it can start Noxis while nobody is "
@@ -1004,6 +1021,9 @@ def cmd_service(args) -> int:
         if linux:
             print(f"  Runs as {user}, with only two extra permissions: watching packets (to name "
                   "stealth scanners and spot network sweeps) and decoy ports below 1024.")
+            if rule:
+                print(f"  {user} may also ask for fresh Wi-Fi scans, to spot evil twins and camera "
+                      f"hotspots nearby (that permission only: {rule}).")
             print("  Starts when the computer starts, restarts if it crashes, keeps running after "
                   "you log out.")
         else:
@@ -1034,6 +1054,8 @@ def cmd_service(args) -> int:
         print(f"  Runs: noxis monitor {' '.join(read.get('options', []))}".rstrip())
         if paused:
             print("  Resume with: noxis service resume")
+        for hint in _linux_hints(wifi_check="--no-wifi" not in read.get("options", [])):
+            print(f"  Note: {hint}")
         recent = service.linux_recent_log() if linux else service.tail(service.log_path(root))
         if recent:
             print("\nRecent output:")

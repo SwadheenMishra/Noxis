@@ -126,6 +126,61 @@ def parse_nmcli(text: str) -> list[AccessPoint]:
     return aps
 
 
+WIFI_SCAN_ACTION = "org.freedesktop.NetworkManager.wifi.scan"
+
+STALE_NOTE = ("NetworkManager doesn't let this user ask for a fresh Wi-Fi scan, so this list "
+              "may be old and miss nearby networks. `noxis service install` allows it for "
+              "your account (that permission only), or run the scan with sudo.")
+
+
+def parse_nm_permissions(text: str) -> dict[str, str]:
+    """`nmcli -t -f PERMISSION,VALUE general permissions` -> {permission: yes|no|auth}."""
+    perms = {}
+    for line in text.splitlines():
+        name, _, value = line.strip().rpartition(":")
+        if name:
+            perms[name] = value.strip().lower()
+    return perms
+
+
+def rescan_allowed() -> bool:
+    """Can we make NetworkManager scan right now? (Linux.) Without it, nmcli
+    quietly returns its old list: often just the network we're connected to."""
+    if IS_WINDOWS:
+        return True
+    import os
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    out = run(["nmcli", "-t", "-f", "PERMISSION,VALUE", "general", "permissions"])
+    if not out:
+        return True  # no NetworkManager to ask: nothing to warn about
+    return parse_nm_permissions(out).get(WIFI_SCAN_ACTION, "yes") == "yes"
+
+
+def power_save_hint() -> str | None:
+    """Linux: a hint if Wi-Fi power saving is on. The chip then naps between
+    beacons and loses some broadcasts (on a Pi, about a fifth of an ARP sweep),
+    which hurts device discovery and network-sweep detection."""
+    if IS_WINDOWS:
+        return None
+    ifaces = re.findall(r"^\s*Interface\s+(\S+)", run(["iw", "dev"]), re.M)
+    on = [i for i in ifaces
+          if re.search(r"Power save:\s*on", run(["iw", "dev", i, "get", "power_save"]), re.I)]
+    if not on:
+        return None
+    iface = on[0]
+    conn = None
+    for line in run(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"]).splitlines():
+        name, _, dev = line.rpartition(":")
+        if dev == iface and name:
+            conn = name.replace("\\:", ":")
+    keep = (f" To keep it off: sudo nmcli connection modify \"{conn}\" 802-11-wireless.powersave 2"
+            if conn else "")
+    return (f"Wi-Fi power saving is on ({iface}), so it misses some packets: devices and network "
+            f"sweeps can slip past. Turn it off until reboot: sudo iw dev {iface} set power_save "
+            f"off.{keep}")
+
+
 def scan_nearby(oui=None, trigger: bool = True) -> list[AccessPoint]:
     if IS_WINDOWS:
         if trigger and _trigger_windows_scan():

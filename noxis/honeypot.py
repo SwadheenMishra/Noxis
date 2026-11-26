@@ -171,7 +171,7 @@ class Detector:
             if not self._cooldown(("scan", src), now):
                 alerts.append(HoneypotAlert(
                     "high", "Port scan hit the honeypot", src,
-                    f"{src} connected to {len(ports)} decoy ports ({', '.join(map(str, ports))}) "
+                    f"{src} connected to {len(ports)} decoy ports so far ({', '.join(map(str, ports))}) "
                     f"within {int(self.scan_window)}s. Something is scanning this machine for "
                     "weaknesses (nmap, a worm, or an infected device).", ports))
         elif not self._cooldown(("touch", src, ev.dst_port), now):
@@ -200,7 +200,7 @@ class Detector:
         if len(ports) >= self.syn_ports and not self._cooldown(("syn", src), now):
             return [HoneypotAlert(
                 "high", "Port scan detected", src,
-                f"{src} tried {len(ports)} different ports on this machine in "
+                f"{src} tried {len(ports)} different ports on this machine so far, within "
                 f"{int(self.syn_window)}s. Seen at packet level, so this also catches stealth "
                 "SYN scans (nmap -sS, masscan) that never complete a connection.",
                 sorted(ports)[:20])]
@@ -217,7 +217,7 @@ class Detector:
         if len(targets) >= self.arp_targets and not self._cooldown(("arp", mac), now):
             return [HoneypotAlert(
                 "high", "Network sweep detected", ev.src_ip,
-                f"{ev.src_ip} ({mac}) asked for {len(targets)} different addresses in "
+                f"{ev.src_ip} ({mac}) asked for {len(targets)} different addresses so far, within "
                 f"{int(self.arp_window)}s. That's someone mapping every device on the network "
                 "(nmap host discovery, arp-scan, Noxis itself).")]
         return []
@@ -255,6 +255,57 @@ def parse_frame(frame: bytes):
 
 
 SYN, ACK = 0x02, 0x10
+
+# Classic BPF program for the packet watcher, run by the kernel on every frame
+# so Python only sees what the detector uses: ARP requests, and incoming TCP
+# segments with SYN set and ACK clear. Everything this machine sends (its own
+# scans: thousands of packets) and all other traffic is dropped in the kernel,
+# so a busy moment can't overflow the socket's queue and hide a real scan.
+_SKF_AD_PKTTYPE = 0xFFFFF000 + 4  # SKF_AD_OFF + SKF_AD_PKTTYPE
+_PACKET_OUTGOING = 4
+SNIFF_FILTER = [
+    # (code, jt, jf, k); jumps count from the next instruction
+    (0x20, 0, 0, _SKF_AD_PKTTYPE),   # 0  A = packet type
+    (0x15, 14, 0, _PACKET_OUTGOING),  # 1  sent by us -> drop
+    (0x28, 0, 0, 12),                # 2  A = EtherType
+    (0x15, 0, 2, 0x0806),            # 3  ARP? else -> 6
+    (0x28, 0, 0, 20),                # 4  A = ARP opcode
+    (0x15, 9, 10, 1),                # 5  request -> accept, else drop
+    (0x15, 0, 9, 0x0800),            # 6  IPv4? else drop
+    (0x30, 0, 0, 23),                # 7  A = IP protocol
+    (0x15, 0, 7, 6),                 # 8  TCP? else drop
+    (0x28, 0, 0, 20),                # 9  A = flags + fragment offset
+    (0x45, 5, 0, 0x1FFF),            # 10 a later fragment -> drop
+    (0xB1, 0, 0, 14),                # 11 X = IP header length
+    (0x50, 0, 0, 27),                # 12 A = TCP flags
+    (0x54, 0, 0, SYN | ACK),         # 13 A &= SYN|ACK
+    (0x15, 0, 1, SYN),               # 14 SYN without ACK -> accept, else drop
+    (0x06, 0, 0, 0x40000),           # 15 accept
+    (0x06, 0, 0, 0),                 # 16 drop
+]
+SOL_PACKET, PACKET_STATISTICS, SO_ATTACH_FILTER = 263, 6, 26
+
+
+def attach_filter(sock: socket.socket, program=SNIFF_FILTER) -> bool:
+    """Attach a classic BPF program to a packet socket. False if the kernel refused."""
+    import ctypes
+    raw = b"".join(struct.pack("HBBI", *insn) for insn in program)
+    buf = ctypes.create_string_buffer(raw, len(raw))
+    fprog = struct.pack("HL", len(program), ctypes.addressof(buf))  # struct sock_fprog
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, SO_ATTACH_FILTER, fprog)
+        return True
+    except OSError:
+        return False
+
+
+def read_drops(sock: socket.socket) -> int:
+    """Frames the kernel dropped because the queue was full, since the last call."""
+    try:
+        _, drops = struct.unpack("II", sock.getsockopt(SOL_PACKET, PACKET_STATISTICS, 8))
+        return drops
+    except OSError:
+        return 0
 
 
 def frame_to_event(frame: bytes, local_ip: str, now: float) -> HoneypotEvent | None:
@@ -315,10 +366,13 @@ class Honeypot:
     def __init__(self, local_ip: str, local_mac: str | None,
                  on_alert: Callable[[HoneypotAlert], None],
                  log_path=None, ports: list[int] | None = None, bind: str = "0.0.0.0",
-                 lure: bool = False):
+                 lure: bool = False, on_note: Callable[[str], None] | None = None):
         self.bind = bind
         self.local_ip = local_ip
         self.on_alert = on_alert
+        self.on_note = on_note or (lambda msg: print(msg, flush=True))
+        self.filtered = False  # kernel packet filter attached
+        self.dropped = 0       # frames the packet watcher missed
         self.log_path = log_path
         self.ports = ports or sorted(DECOYS)
         if lure:
@@ -408,18 +462,33 @@ class Honeypot:
             self.sniff_note = ("needs root, or run it with `noxis service install`"
                               if isinstance(e, PermissionError) else "not supported here")
             return
+        self.filtered = attach_filter(s)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)  # capped by the kernel
+        except OSError:
+            pass
+        read_drops(s)  # start counting from now
         self.sniffing = True
         s.settimeout(1.0)
+        next_check = time.monotonic() + 60
         while not stop.is_set():
             try:
                 frame = s.recv(2048)
             except socket.timeout:
-                continue
+                frame = None
             except OSError:
                 break
-            ev = frame_to_event(frame, self.local_ip, time.time())
-            if ev:
-                self._record(ev)
+            if frame:
+                ev = frame_to_event(frame, self.local_ip, time.time())
+                if ev:
+                    self._record(ev)
+            if time.monotonic() >= next_check:
+                next_check = time.monotonic() + 60
+                if dropped := read_drops(s):
+                    self.dropped += dropped
+                    self.on_note(f"Packet watcher missed {dropped} packets in the last minute "
+                                 "(this computer was too busy): a scan in that time may have "
+                                 "gone unnoticed.")
         s.close()
 
     def _watch_counters(self, stop: threading.Event):

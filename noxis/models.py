@@ -125,6 +125,7 @@ class ScanResult:
     oui_sources: list[str] = field(default_factory=list)
     nearby: list = field(default_factory=list)  # wifi.AccessPoint
     wifi_scanned: bool = False
+    wifi_stale: bool = False  # couldn't ask for a fresh Wi-Fi scan (Linux permissions)
     rounds: int = 1  # >1 for a sweep
     round_times: list[str] = field(default_factory=list)
     checks: list = field(default_factory=list)  # mitm.Check results

@@ -170,12 +170,69 @@ def linux_service_user(explicit: str | None) -> str:
                        "own account, or name the account: --user NAME")
 
 
-def linux_install(root: Path, options: list[str], user: str) -> None:
+# NetworkManager only scans for Wi-Fi when polkit says the caller may. A
+# service (or an SSH login) isn't an "active local session", so without this
+# nmcli quietly returns its old list and evil twins nearby go unseen. The rule
+# allows that one action, for the service's user only.
+POLKIT_RULES = Path("/etc/polkit-1/rules.d/50-noxis-wifi-scan.rules")       # polkit 0.106+
+POLKIT_PKLA = Path("/etc/polkit-1/localauthority/50-local.d/50-noxis-wifi-scan.pkla")  # older
+
+
+def polkit_rule(user: str) -> str:
+    return ("// Added by `noxis service install`: lets the Noxis service ask NetworkManager\n"
+            "// for a fresh Wi-Fi scan. Removed by `noxis service uninstall`.\n"
+            "polkit.addRule(function(action, subject) {\n"
+            "    if (action.id == \"org.freedesktop.NetworkManager.wifi.scan\" &&\n"
+            f"        subject.user == {json.dumps(user)}) {{\n"
+            "        return polkit.Result.YES;\n"
+            "    }\n"
+            "});\n")
+
+
+def polkit_pkla(user: str) -> str:
+    return ("# Added by `noxis service install`: lets the Noxis service ask NetworkManager\n"
+            "# for a fresh Wi-Fi scan. Removed by `noxis service uninstall`.\n"
+            "[Noxis Wi-Fi scan]\n"
+            f"Identity=unix-user:{user}\n"
+            "Action=org.freedesktop.NetworkManager.wifi.scan\n"
+            "ResultAny=yes\nResultInactive=yes\nResultActive=yes\n")
+
+
+def install_wifi_scan_rule(user: str) -> Path | None:
+    """Allow `user` to trigger Wi-Fi scans. Returns the file written, or None
+    when there's no NetworkManager/polkit here (nothing needed or possible)."""
+    import shutil
+    if not shutil.which("nmcli"):
+        return None
+    if POLKIT_RULES.parent.is_dir():
+        path, text = POLKIT_RULES, polkit_rule(user)
+    elif POLKIT_PKLA.parent.parent.is_dir():
+        POLKIT_PKLA.parent.mkdir(exist_ok=True)
+        path, text = POLKIT_PKLA, polkit_pkla(user)
+    else:
+        return None
+    path.write_text(text, encoding="utf-8")
+    os.chmod(path, 0o644)
+    return path
+
+
+def remove_wifi_scan_rule() -> None:
+    for path in (POLKIT_RULES, POLKIT_PKLA):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def linux_install(root: Path, options: list[str], user: str) -> Path | None:
+    """Install and start the unit. Returns the Wi-Fi scan rule's path, if one was added."""
     UNIT_PATH.write_text(systemd_unit(user, root, sys.executable, options), encoding="utf-8")
     os.chmod(UNIT_PATH, 0o644)
+    rule = install_wifi_scan_rule(user)
     _must(["systemctl", "daemon-reload"])
     _must(["systemctl", "enable", UNIT_NAME])
     _must(["systemctl", "restart", UNIT_NAME])
+    return rule
 
 
 def linux_installed() -> bool:
@@ -226,6 +283,7 @@ def linux_uninstall() -> None:
         UNIT_PATH.unlink()
     except FileNotFoundError:
         pass
+    remove_wifi_scan_rule()
     _run(["systemctl", "daemon-reload"])
     _run(["systemctl", "reset-failed", UNIT_NAME])
 

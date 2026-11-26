@@ -33,7 +33,7 @@ body:
     attributes:
       label: Noxis version
       description: Output of `noxis --version`
-      placeholder: noxis 0.1.1
+      placeholder: noxis 0.1.2
     validations:
       required: true
   - type: dropdown

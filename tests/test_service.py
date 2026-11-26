@@ -67,6 +67,46 @@ class UnitFileTests(unittest.TestCase):
         self.assertEqual(argv[-3:], ["service", "install", "--honeypot"])
 
 
+class WifiScanRuleTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.etc = Path(tmp.name)
+
+    def paths(self):
+        return mock.patch.multiple(
+            service, POLKIT_RULES=self.etc / "rules.d" / "50-noxis-wifi-scan.rules",
+            POLKIT_PKLA=self.etc / "localauthority" / "50-local.d" / "50-noxis-wifi-scan.pkla")
+
+    def test_rule_allows_only_wifi_scan_for_one_user(self):
+        text = service.polkit_rule("alice")
+        self.assertIn('action.id == "org.freedesktop.NetworkManager.wifi.scan"', text)
+        self.assertIn('subject.user == "alice"', text)
+        self.assertEqual(text.count("polkit.Result.YES"), 1)
+        self.assertIn("Identity=unix-user:alice", service.polkit_pkla("alice"))
+
+    def test_install_and_remove(self):
+        (self.etc / "rules.d").mkdir()
+        with self.paths(), mock.patch("shutil.which", return_value="/usr/bin/nmcli"):
+            path = service.install_wifi_scan_rule("alice")
+            self.assertEqual(path, service.POLKIT_RULES)
+            self.assertIn('"alice"', path.read_text())
+            service.remove_wifi_scan_rule()
+            self.assertFalse(path.exists())
+
+    def test_older_polkit_gets_pkla(self):
+        (self.etc / "localauthority").mkdir()
+        with self.paths(), mock.patch("shutil.which", return_value="/usr/bin/nmcli"):
+            path = service.install_wifi_scan_rule("alice")
+            self.assertEqual(path.suffix, ".pkla")
+
+    def test_nothing_without_networkmanager(self):
+        (self.etc / "rules.d").mkdir()
+        with self.paths(), mock.patch("shutil.which", return_value=None):
+            self.assertIsNone(service.install_wifi_scan_rule("alice"))
+            self.assertEqual(list((self.etc / "rules.d").iterdir()), [])
+
+
 class TaskXmlTests(unittest.TestCase):
     def parse(self, at_startup):
         xml = service.task_xml(Path(r"C:\Users\a\.noxis"), ["--honeypot", "--preset", "my home"],

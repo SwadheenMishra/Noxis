@@ -196,6 +196,9 @@ def _nearby_lines(t: Term, result: ScanResult) -> None:
     flagged = result.flagged_aps()
     t.out()
     t.out(t.c("bold", "Nearby Wi-Fi") + t.c("dim", f"  ({len(result.nearby)} access points)"))
+    if result.wifi_stale:
+        from .wifi import STALE_NOTE
+        t.out(t.c("medium", f"  Possibly out of date: {STALE_NOTE}"))
     if not result.nearby:
         t.out(t.c("dim", "  No nearby networks could be listed (Wi-Fi off, wired-only, or no permission)."))
         return
@@ -432,6 +435,9 @@ def _html_nearby(result: ScanResult) -> list[str]:
     if not result.wifi_scanned:
         return []
     parts = [f"<h2>Nearby Wi-Fi ({len(result.nearby)} access points)</h2>"]
+    if result.wifi_stale:
+        from .wifi import STALE_NOTE
+        parts.append(f"<div class='f medium'><b>Possibly out of date</b><br>{_e(STALE_NOTE)}</div>")
     if not result.nearby:
         return parts + ["<p class='muted'>No nearby networks could be listed.</p>"]
     for ap in result.flagged_aps():

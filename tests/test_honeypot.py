@@ -45,6 +45,88 @@ class ParseTests(unittest.TestCase):
                                          "192.168.1.70", 1.0))
 
 
+def run_bpf(program, frame: bytes, pkttype: int = 0) -> int:
+    """A tiny classic-BPF interpreter for the instructions SNIFF_FILTER uses."""
+    a = x = pc = 0
+
+    def load(off, size):
+        if off == honeypot._SKF_AD_PKTTYPE:
+            return pkttype
+        if off + size > len(frame):
+            raise IndexError  # the kernel drops the frame
+        return int.from_bytes(frame[off:off + size], "big")
+
+    try:
+        while True:
+            code, jt, jf, k = program[pc]
+            pc += 1
+            if code in (0x20, 0x28, 0x30):
+                a = load(k, {0x20: 4, 0x28: 2, 0x30: 1}[code])
+            elif code == 0x50:
+                a = load(x + k, 1)
+            elif code == 0xB1:
+                x = (load(k, 1) & 0x0F) * 4
+            elif code == 0x54:
+                a &= k
+            elif code == 0x15:
+                pc += jt if a == k else jf
+            elif code == 0x45:
+                pc += jt if a & k else jf
+            elif code == 0x06:
+                return k
+            else:
+                raise AssertionError(f"unknown BPF opcode {code:#x}")
+    except IndexError:
+        return 0
+
+
+class KernelFilterTests(unittest.TestCase):
+    """The packet watcher's kernel filter keeps exactly what the detector uses."""
+
+    def keeps(self, frame, pkttype=0):
+        return run_bpf(honeypot.SNIFF_FILTER, frame, pkttype) > 0
+
+    def test_keeps_arp_requests_and_incoming_syns(self):
+        self.assertTrue(self.keeps(arp_request("192.168.1.77", "192.168.1.10")))
+        self.assertTrue(self.keeps(tcp_syn("192.168.1.77", "192.168.1.70", 3306)))
+
+    def test_drops_everything_else(self):
+        reply = bytearray(arp_request("192.168.1.77", "192.168.1.10"))
+        reply[21] = 2  # ARP reply
+        self.assertFalse(self.keeps(bytes(reply)))
+        self.assertFalse(self.keeps(tcp_syn("192.168.1.77", "192.168.1.70", 22, 0x12)))  # SYN-ACK
+        self.assertFalse(self.keeps(tcp_syn("192.168.1.77", "192.168.1.70", 22, 0x10)))  # ACK
+        udp = bytearray(tcp_syn("192.168.1.77", "192.168.1.70", 53))
+        udp[23] = 17
+        self.assertFalse(self.keeps(bytes(udp)))
+        frag = bytearray(tcp_syn("192.168.1.77", "192.168.1.70", 22))
+        frag[21] = 0x10  # fragment offset > 0
+        self.assertFalse(self.keeps(bytes(frag)))
+        self.assertFalse(self.keeps(ether(0x86DD, b"\x60" + b"\x00" * 60)))  # IPv6
+        self.assertFalse(self.keeps(b"\x00" * 10))  # runt
+
+    def test_drops_what_this_machine_sends(self):
+        """Our own scans: thousands of outgoing SYNs and ARP requests per round."""
+        self.assertFalse(self.keeps(arp_request("192.168.1.70", "192.168.1.10"), pkttype=4))
+        self.assertFalse(self.keeps(tcp_syn("192.168.1.70", "192.168.1.77", 80), pkttype=4))
+
+    def test_ip_options_are_handled(self):
+        ip = struct.pack("!BBHHHBBH4s4s", 0x46, 0, 44, 0, 0, 64, 6, 0,
+                         socket.inet_aton("192.168.1.77"), socket.inet_aton("192.168.1.70")) + b"\x01" * 4
+        tcp = struct.pack("!HHIIBBHHH", 40000, 22, 0, 0, 0x50, 0x02, 1024, 0, 0)
+        self.assertTrue(self.keeps(ether(0x0800, ip + tcp)))
+
+    def test_jumps_stay_inside_the_program(self):
+        for i, (code, jt, jf, _) in enumerate(honeypot.SNIFF_FILTER):
+            if code in (0x15, 0x45):
+                self.assertLess(i + 1 + max(jt, jf), len(honeypot.SNIFF_FILTER))
+
+    def test_drop_counter_on_other_sockets(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(s.close)
+        self.assertEqual(honeypot.read_drops(s), 0)
+
+
 class DetectorTests(unittest.TestCase):
     def test_single_touch_then_scan(self):
         d = Detector()

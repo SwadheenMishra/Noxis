@@ -246,6 +246,7 @@ def run_scan(oui: OuiDB, target: str | None = None, quick: bool = False,
         network=net, devices=devices, started=started,
         duration=time.monotonic() - t0, oui_sources=oui.sources,
         nearby=nearby, wifi_scanned=with_wifi, round_times=[started],
+        wifi_stale=with_wifi and not IS_WINDOWS and not wifi.rescan_allowed(),
         checks=checks, check_findings=check_findings, upnp=forwards,
     )
 
@@ -336,6 +337,7 @@ def merge_rounds(results: list[ScanResult]) -> ScanResult:
         oui_sources=base.oui_sources,
         nearby=sorted(aps.values(), key=lambda a: -(a.signal or 0)),
         wifi_scanned=any(r.wifi_scanned for r in results),
+        wifi_stale=any(r.wifi_stale for r in results),
         rounds=len(results),
         round_times=[r.started for r in results],
     )
