@@ -71,5 +71,19 @@ class ReportBrandTests(unittest.TestCase):
         self.assertNotIn("https://", page)
 
 
+class DeviceTableTests(unittest.TestCase):
+    def test_names_line_up_whatever_the_confidence(self):
+        devices = [Device(ip="192.168.1.70", mac="aa:bb:cc:00:00:70", device_type="sbc",
+                          type_label="Single-board computer", confidence=c, known_name=f"Box {c}")
+                   for c in ("low", "medium", "high")]
+        out = Utf8()
+        report.print_report(ScanResult(network=NET, devices=devices, started="2026-11-25T12:00:00"),
+                            term=report.Term(out))
+        lines = [l for l in out.getvalue().splitlines() if "NAME" in l or "Box " in l]
+        columns = {l.index("NAME") if "NAME" in l else l.index("Box ") for l in lines}
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(len(columns), 1, "\n".join(lines))
+
+
 if __name__ == "__main__":
     unittest.main()

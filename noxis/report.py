@@ -243,14 +243,14 @@ def print_report(result: ScanResult, report_path: str | None = None,
             name = f"[seen {len(d.seen_rounds)}/{result.rounds}] {name}".strip()
         flex.append([vendor, d.type_label, name])
     ip_w = max([2] + [len(d.ip) for d in devices])
-    fixed = [5, ip_w, 17, 5]  # RISK, IP, MAC, SURE?
+    fixed = [5, ip_w, 17, 6]  # RISK, IP, MAC, SURE? (fits "medium")
     flex, (mw, tw, nw) = table_widths(flex, fixed, _terminal_width(t), minimum=[10, 14, 8])
     t.out(t.c("dim", f"{'RISK':<5} {'IP':<{ip_w}} {'MAC':<17} {'MAKER':<{mw}} {'TYPE':<{tw}} "
-                     f"{'SURE?':<5} NAME"))
+                     f"{'SURE?':<6} NAME"))
     for d, (vendor, dtype, name) in zip(devices, flex):
         conf = "-" if d.device_type == "unknown" else d.confidence
         line = (f"{RISK_TAG[d.risk]:<5} {d.ip:<{ip_w}} {(d.mac or '-'):<17} {_fit(vendor, mw):<{mw}} "
-                f"{_fit(dtype, tw):<{tw}} {conf:<5} {_fit(name, nw)}")
+                f"{_fit(dtype, tw):<{tw}} {conf:<6} {_fit(name, nw)}")
         t.out(t.c(d.risk, line.rstrip()) if d.risk in ("high", "medium") else line.rstrip())
 
     hosting = [d for d in devices if d.services and not d.is_self]
