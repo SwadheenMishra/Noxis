@@ -41,3 +41,6 @@ HANDOFF.md
 
 # Design files (kept locally, not part of the code)
 noxis-brand-sheet.png
+
+# Landing page: its own git repo, deployed separately (Vercel)
+landing/
