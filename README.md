@@ -2,8 +2,8 @@
 
 *Your network's night watch.*
 
-**A network security scanner for the networks you actually use: home Wi-Fi, a
-rental, a hotel.**
+**A network security scanner for your own networks, and the ones you're allowed
+to check: home Wi-Fi, a rental or a hotel, with the host's OK.**
 
 Noxis finds every device on the network you're connected to and works out what
 each one is: router, laptop, iPhone, Wi-Fi camera, ESP32 board, Raspberry Pi and
@@ -86,18 +86,27 @@ noxis monitor --notify   # keep watching (on any machine that stays on)
 noxis service install --honeypot   # or keep watching in the background, from boot
 ```
 
-Somewhere unfamiliar, such as an Airbnb or hotel:
+Somewhere unfamiliar, such as an Airbnb or hotel, once the host or venue has
+said it's OK to check their network:
 
 ```powershell
 noxis sweep --honeypot --open
+```
+
+Without permission, stick to what doesn't scan other people's devices
+(see [Use it responsibly](#use-it-responsibly)):
+
+```powershell
+noxis check      # is this network tampering with my connection?
+noxis honeypot   # is anyone probing my laptop?
 ```
 
 ## Choosing a mode
 
 | Mode | Use it when | What it does | Takes | Leaves you |
 |---|---|---|---|---|
-| `scan` | You want a snapshot of a network right now: your home, or a quick first look anywhere | One pass: finds devices, identifies them and their services, checks nearby Wi-Fi and your connection | ~40 s | A terminal summary and an HTML report |
-| `sweep` | You're somewhere you don't trust, such as an Airbnb, hotel or office, and want a thorough check before relaxing | Several scans spaced apart, merged into one report. Devices that sleep (battery cameras, phones) get more chances to show up. Adds a physical-search checklist | ~6 min by default | A timestamped HTML report you can keep as evidence |
+| `scan` | You want a snapshot of a network right now: your home, or a quick first look at a network you're allowed to check | One pass: finds devices, identifies them and their services, checks nearby Wi-Fi and your connection | ~40 s | A terminal summary and an HTML report |
+| `sweep` | You're staying somewhere you don't trust (an Airbnb, hotel or office), have permission to check its network, and want a thorough check before relaxing | Several scans spaced apart, merged into one report. Devices that sleep (battery cameras, phones) get more chances to show up. Adds a physical-search checklist | ~6 min by default | A timestamped HTML report you can keep as evidence |
 | `monitor` | You want to keep watch over a network, for hours or 24/7 | Scans again every few minutes and alerts on what your [alert preset](#alerts) cares about: a new device joining, something high-risk appearing, someone touching the honeypot. Remembers what it has seen across restarts. Runs until you stop it | Until stopped | Alerts on screen, in `alerts.log` and, with `--notify`, as desktop pop-ups |
 | `check` | You've just joined a network and only want to know whether it's tampering with your connection | Only the connection checks: HTTPS interception, DNS, page tampering and router port forwards. No device scan | ~5-10 s | A pass/fail list (exit code 1 if anything is high) |
 | `honeypot` | You want to know whether anyone is probing this computer, without scanning anything yourself | Runs fake services (Telnet, FTP, SSH, databases...) and alerts on anyone who touches them | Until stopped | Alerts and `honeypot.log` |
@@ -106,7 +115,7 @@ noxis sweep --honeypot --open
 
 **`scan` vs `sweep`:** a scan is one look. A sweep is several looks over a few
 minutes, which matters because many cameras and battery devices sleep and only
-wake up to upload. In a place you don't trust, always sweep.
+wake up to upload. In a place you don't trust (and may check), always sweep.
 
 **`sweep` vs `monitor`:** a sweep has an end and produces a report; you run it
 when you arrive somewhere. Monitor never ends and produces alerts; you run it on
@@ -116,7 +125,7 @@ home network at 3 a.m. is flagged within minutes.
 
 ```powershell
 noxis scan --open                           # what's on this network right now?
-noxis sweep --honeypot --open               # just arrived at a rental
+noxis sweep --honeypot --open               # just arrived at a rental (with the host's OK)
 noxis sweep --rounds 10 --wait 60 --deep    # a long, thorough sweep
 noxis monitor --honeypot --deep --notify    # keep watch on your home network
 noxis check                                 # is this cafe Wi-Fi tampering with me?
@@ -533,6 +542,23 @@ Noxis connects to the internet only for the connection-integrity checks (a few
 well-known sites), `update-oui` (the IEEE registry), and push notifications if
 you set them up (only to the ntfy server you chose). Use `--no-checks` to skip
 the first.
+
+## Use it responsibly
+
+Noxis scans the devices on the network you're connected to. Only do that on
+networks you own or have permission to test. Scanning someone else's network
+without permission can break its terms of use, and in some places the law.
+Being a guest on a Wi-Fi network doesn't mean you're allowed to scan it.
+
+If you think a rental has a hidden camera and can't get permission to scan, you
+can still:
+
+- run `noxis check` (tests only your own connection) and `noxis honeypot` (only
+  listens, scans nothing),
+- do a physical check: look at smoke detectors, chargers, clocks and anything
+  pointed at the bed or shower, and shine a phone torch around to catch a lens
+  reflection,
+- and report it to the platform. Airbnb, for one, bans indoor cameras.
 
 ## Limits
 
