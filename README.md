@@ -8,26 +8,41 @@ to check: home Wi-Fi, a rental or a hotel, with the host's OK.**
 Noxis finds every device on the network you're connected to and works out what
 each one is: router, laptop, iPhone, Wi-Fi camera, ESP32 board, Raspberry Pi and
 so on. It flags the ones that shouldn't be there and checks whether anyone is
-tampering with your connection. Then it keeps watching.
+tampering with your connection. Then it keeps watching, and tells your phone when
+something changes.
+
+**What it finds**
 
 - **Hidden cameras**, on the network or broadcasting their own hotspot nearby
 - **Unidentified microcontrollers and drop boxes** (ESP32, Raspberry Pi)
 - **Evil-twin Wi-Fi**: networks copying your network's name
 - **ARP spoofing**, MAC cloning and router impersonation
 - **HTTPS interception, DNS hijacking and injected web pages**
-- **Port scans, stealth scans included,** caught by a built-in honeypot
+- **Port scans and network sweeps, stealth scans included,** caught by a built-in
+  honeypot (on Linux it names the device doing it)
 - **Risky open services**: Telnet, ADB, exposed databases and camera streams
 - **Router port forwards** that devices opened to the internet by themselves (UPnP)
 - **What every device is hosting**: web apps, media servers, file shares and proxies,
   including fake login pages and interception tools
 
-It's pure Python with **no dependencies** and **no admin rights needed**. It
+**How it keeps watch**
+
+- **24/7 monitoring** on any machine that stays on, as a background service that
+  starts at boot and restarts if it crashes (`noxis service install`)
+- **Alerts when something changes**: a new device joins, a risky one appears,
+  someone touches the honeypot. Once, not every few minutes
+- **Push notifications to your phone** through ntfy (the free public server or your
+  own), plus a scheduled "still watching" message, so silence means it's down
+- **Alert presets** (`home`, `travel`, or your own) and mutes, so a busy hotel
+  Wi-Fi doesn't buzz your phone all night
+
+It's pure Python with **no dependencies** and **no admin rights needed** to scan. It
 runs on Windows and Linux (macOS isn't supported yet).
 
 For 24/7 monitoring, run it on any machine that stays on: a homelab server, an
 old PC, a laptop or a Raspberry Pi. **Linux is recommended for monitoring.**
-Running as root there, Noxis can name the device behind a stealth scan and spot
-devices mapping your network, which it can't do on Windows. A Raspberry Pi is a
+There, as the background service (or as root), Noxis can name the device behind
+a stealth scan and spot devices mapping your network, which it can't do on Windows. A Raspberry Pi is a
 good choice for running it long-term because it uses very little power, but
 any old machine works.
 
@@ -632,7 +647,7 @@ repeats), `push` sends alerts to ntfy, and `service` runs monitor in the backgro
   - [x] Push notifications through ntfy (public or self-hosted), with start/stop messages and a
         scheduled "still watching" summary
   - [ ] Root-only detection tested on real hardware: naming stealth scanners, network sweeps
-  - [ ] Linux code paths tested live: network settings (`ip`), nearby Wi-Fi (`nmcli`), DNS
+  - [x] Linux code paths tested live: network settings (`ip`), nearby Wi-Fi (`nmcli`), DNS
         (`resolv.conf`)
   - [ ] Rogue DHCP detection: notice a second DHCP server handing out addresses (today Noxis only
         catches the DNS change one would cause)
