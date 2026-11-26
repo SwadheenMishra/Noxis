@@ -5,4 +5,4 @@ Finds devices on the network you're connected to, works out what they are
 look suspicious.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

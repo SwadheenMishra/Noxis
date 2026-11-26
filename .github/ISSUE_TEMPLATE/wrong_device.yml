@@ -1,0 +1,49 @@
+name: Device identified wrong
+description: Noxis called a device the wrong thing, or flagged something harmless (or missed something it shouldn't).
+labels: [fingerprint]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These reports make Noxis better at telling devices apart. Please don't paste full
+        MAC or IP addresses: the manufacturer prefix (the first three pairs, like `b8:27:eb`)
+        is enough.
+  - type: input
+    id: actual
+    attributes:
+      label: What the device really is
+      placeholder: Philips Hue bridge, Samsung smart TV, my work laptop...
+    validations:
+      required: true
+  - type: input
+    id: noxis
+    attributes:
+      label: What Noxis said
+      placeholder: "Unknown device, ESP32 board (medium risk)"
+    validations:
+      required: true
+  - type: input
+    id: vendor
+    attributes:
+      label: Manufacturer Noxis showed, or the MAC prefix
+      placeholder: "Espressif / b8:27:eb"
+  - type: textarea
+    id: services
+    attributes:
+      label: Open ports or services shown for it
+      description: From the report's device details, if any.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Noxis version
+      description: Output of `noxis --version`
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I haven't pasted full IP or MAC addresses, network names or device names that identify me.
+          required: true

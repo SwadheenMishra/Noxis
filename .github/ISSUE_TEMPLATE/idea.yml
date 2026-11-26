@@ -1,0 +1,20 @@
+name: Idea or feedback
+description: A feature you'd like, something confusing or noisy, or general feedback.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas and feedback are very welcome. Please describe them in words rather than code:
+        Noxis doesn't accept code contributions (see CONTRIBUTING.md).
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea or feedback
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Where would it help?
+      description: The situation you were in, e.g. "at a hotel I wanted to know..."

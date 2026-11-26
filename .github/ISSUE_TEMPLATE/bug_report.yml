@@ -1,0 +1,87 @@
+name: Bug report
+description: Something went wrong, crashed, or didn't do what the README says.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Noxis! **Before pasting any output, remove anything private:**
+        IP and MAC addresses, network (Wi-Fi) names, device names, and any ntfy topic or token.
+        Replacing them with placeholders like `192.168.1.X` or `aa:bb:cc:...` is fine.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: And what did you expect to happen instead?
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command you ran
+      placeholder: noxis sweep --honeypot --open
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The terminal output, or the error. Private details removed, please.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Noxis version
+      description: Output of `noxis --version`
+      placeholder: noxis 0.1.1
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Raspberry Pi OS
+        - Ubuntu / Debian
+        - Other Linux (say which below)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - pipx
+        - pip
+        - pip in a virtual environment
+        - From the source code (git clone)
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version` (or `python3 --version`)
+  - type: dropdown
+    id: root
+    attributes:
+      label: How was it running?
+      options:
+        - Normally, as me
+        - With sudo
+        - As the background service (noxis service)
+        - As Administrator (Windows)
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: The kind of network (home, hotel, office), Wi-Fi or cable, anything unusual.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I've removed IP and MAC addresses, network names, device names and tokens from what I pasted.
+          required: true

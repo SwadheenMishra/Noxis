@@ -973,6 +973,12 @@ def cmd_service(args) -> int:
     root = data_dir()
     linux = service.IS_LINUX
     action = args.action or "status"
+    # Before asking for sudo: nothing to pause or remove if it was never installed.
+    if action != "install" and not (service.linux_installed() if linux else service.windows_installed()):
+        print("The Noxis service isn't installed. Install it with: noxis service install "
+              "[monitor options, e.g. --honeypot]")
+        return 0 if action == "status" else 1
+
     needs_root = linux and action in ("install", "pause", "resume", "uninstall")
     if needs_root and os.geteuid() != 0:
         print(f"`noxis service {action}` changes a system service, so it needs sudo. Running it "
@@ -980,11 +986,6 @@ def cmd_service(args) -> int:
         argv = ["service", action, *(["--user", args.user] if args.user else []),
                 *getattr(args, "monitor_opts", [])]
         os.execvp("sudo", service.sudo_argv(argv, root))
-
-    if action != "install" and not (service.linux_installed() if linux else service.windows_installed()):
-        print("The Noxis service isn't installed. Install it with: noxis service install "
-              "[monitor options, e.g. --honeypot]")
-        return 0 if action == "status" else 1
 
     if action == "install":
         options = _service_monitor_options(args.monitor_opts, root)
@@ -1039,12 +1040,17 @@ def cmd_service(args) -> int:
             for line in recent:
                 print(f"  {line}")
         elif linux:
-            print("\n(Can't read its log as you: try `sudo noxis service logs`.)")
+            print("\n(Can't read its log as you: see it with `noxis service logs`.)")
         return 0
 
     if action == "logs":
         if linux:
-            os.execvp("journalctl", ["journalctl", "-u", service.UNIT_NAME, "-f", "-n", "30"])
+            cmd = ["journalctl", "-u", service.UNIT_NAME, "-f", "-n", "30"]
+            if not service.can_read_journal():
+                print("Reading the service log needs sudo here (you may be asked for your "
+                      "password)...", flush=True)
+                cmd = ["sudo", *cmd]
+            os.execvp(cmd[0], cmd)
         print(f"Following {service.log_path(root)} (Ctrl+C to stop)")
         try:
             service.follow(service.log_path(root))

@@ -119,12 +119,40 @@ class CommandTests(TempHome):
 
     def test_linux_asks_for_sudo(self):
         with mock.patch.object(service, "IS_LINUX", True), \
+                mock.patch.object(service, "linux_installed", return_value=True), \
                 mock.patch("os.geteuid", create=True, return_value=1000), \
                 mock.patch("os.execvp", side_effect=SystemExit(0)) as ex:
             with self.assertRaises(SystemExit):
                 self.run_cli("service", "pause")
         self.assertEqual(ex.call_args[0][1][:2], ["sudo", "env"])
         self.assertEqual(ex.call_args[0][1][-2:], ["service", "pause"])
+
+    def test_not_installed_skips_sudo(self):
+        """Nothing to remove: say so without asking for a password or creating files."""
+        with mock.patch.object(service, "IS_LINUX", True), \
+                mock.patch.object(service, "linux_installed", return_value=False), \
+                mock.patch.object(service, "linux_uninstall") as lu, \
+                mock.patch("os.geteuid", create=True, return_value=1000), \
+                mock.patch("os.execvp") as ex:
+            code, out = self.run_cli("service", "uninstall")
+        self.assertEqual(code, 1)
+        self.assertIn("isn't installed", out)
+        ex.assert_not_called()
+        lu.assert_not_called()
+        self.assertFalse(service.state_path(self.root).exists())
+
+    def test_logs_use_sudo_only_when_needed(self):
+        for readable, first in ((True, "journalctl"), (False, "sudo")):
+            with self.subTest(readable=readable), \
+                    mock.patch.object(service, "IS_LINUX", True), \
+                    mock.patch.object(service, "linux_installed", return_value=True), \
+                    mock.patch.object(service, "can_read_journal", return_value=readable), \
+                    mock.patch("os.execvp", side_effect=SystemExit(0)) as ex:
+                with self.assertRaises(SystemExit):
+                    self.run_cli("service", "logs")
+            self.assertEqual(ex.call_args[0][0], first)
+            self.assertIn("journalctl", ex.call_args[0][1])
+            self.assertNotIn("noxis", ex.call_args[0][1])  # works even if sudo can't find noxis
 
     def test_pause_resume_state(self):
         with mock.patch.multiple(service, IS_LINUX=False, IS_WINDOWS=True), \

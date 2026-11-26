@@ -570,8 +570,9 @@ can still:
 - **Sleeping phones and battery devices** can be missed in one scan. `sweep` and
   `monitor` help with this.
 - **Some checks need Linux, with root or the Noxis service:** naming who sent a
-  stealth scan, and detecting network sweeps. Run `sudo noxis monitor`, or
-  `noxis service install`, which gets just the permission these need. Any Linux
+  stealth scan, and detecting network sweeps. Run `noxis service install`, which
+  gets just the permission these need, or `sudo noxis monitor` (installed with
+  pipx: `sudo ~/.local/bin/noxis monitor`). Any Linux
   machine works (a Pi, a homelab server, an old PC).
 - **Wi-Fi parsing on Windows reads English `netsh` output.**
 - **A perfect clone of a quiet device won't stand out.** Fingerprints catch a

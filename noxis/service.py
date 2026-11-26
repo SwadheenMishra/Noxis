@@ -193,6 +193,20 @@ def linux_status() -> dict:
             "restarts": info.get("NRestarts")}
 
 
+def can_read_journal() -> bool:
+    """Root, and members of adm or systemd-journal, can read a system service's log."""
+    if os.geteuid() == 0:
+        return True
+    import grp
+    names = set()
+    for gid in os.getgroups():
+        try:
+            names.add(grp.getgrgid(gid).gr_name)
+        except KeyError:
+            pass
+    return bool(names & {"adm", "systemd-journal"})
+
+
 def linux_recent_log(lines: int = 12) -> list[str]:
     code, out = _run(["journalctl", "-u", UNIT_NAME, "-n", str(lines), "--no-pager", "-o", "cat"])
     return out.splitlines() if code == 0 and "No journal files" not in out else []
