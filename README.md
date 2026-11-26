@@ -585,10 +585,11 @@ repeats), `push` sends alerts to ntfy, and `service` runs monitor in the backgro
         crashes, survives closing SSH, pause and resume
   - [x] Push notifications through ntfy (public or self-hosted), with start/stop messages and a
         scheduled "still watching" summary
-  - [ ] Root-only detection tested on real hardware: naming stealth scanners, network sweeps,
-        rogue DHCP servers
+  - [ ] Root-only detection tested on real hardware: naming stealth scanners, network sweeps
   - [ ] Linux code paths tested live: network settings (`ip`), nearby Wi-Fi (`nmcli`), DNS
         (`resolv.conf`)
+  - [ ] Rogue DHCP detection: notice a second DHCP server handing out addresses (today Noxis only
+        catches the DNS change one would cause)
 - [ ] Wi-Fi deauth detection (ESP32 sensor)
 - [ ] Tailscale-aware interface handling
 
