@@ -1,4 +1,4 @@
-# Noxis
+# Noxis - https://noxis-plum.vercel.app/
 
 *Your network's night watch.*
 
